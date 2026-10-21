@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2347c5">
+<title>Podcast Player</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{color-scheme:light dark;--bg:#edf0f4;--fg:#121821;--mu:#5b6676;--ln:#dbe0e7;--ac:#2347c5;--on:#fff;--bt:#fff;--ok:#1d7a4c}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e8edf3;--mu:#97a3b3;--ln:#28313d;--ac:#8fa6ff;--on:#0d1117;--bt:#1c232d;--ok:#5cc58e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.35 system-ui,-apple-system,sans-serif}
+.drive{min-height:100vh;min-height:100svh;display:flex;flex-direction:column;gap:8px;padding:max(10px,env(safe-area-inset-top)) 12px 12px;max-width:720px;margin:0 auto}
+.hd h1{font-size:17px;margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hd p{margin:2px 0 0;color:var(--mu);font-size:14px}
+input[type=range]{width:100%;height:34px;margin:0;accent-color:var(--ac)}
+.time{display:flex;justify-content:space-between;align-items:baseline;font-size:15px;color:var(--mu);font-variant-numeric:tabular-nums;margin-top:-6px}
+.time b{color:var(--fg);font-size:17px}
+.grid{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1.5fr 1fr 1fr 1fr 1fr;gap:10px;min-height:480px}
+button{font:inherit;border:0;background:var(--bt);color:var(--fg);border-radius:18px;font-size:32px;font-weight:700;font-variant-numeric:tabular-nums;box-shadow:0 1px 2px rgba(0,0,0,.08);-webkit-tap-highlight-color:transparent;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+button:active{filter:brightness(.85);transform:scale(.97)}
+#play{grid-column:1/-1;background:var(--ac);color:var(--on);font-size:60px}
+#prev,#next{font-size:46px}
+.spd{display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.05}
+.spd span{font-size:44px}.spd small{font-size:15px;font-weight:600;color:var(--mu)}
+.st{text-align:center;font-size:14px;font-weight:600;color:var(--ok);min-height:20px}
+.cp{width:100%;min-height:64px;font-size:21px}.cp.ok{background:var(--ac);color:var(--on)}
+.hint{text-align:center;color:var(--mu);font-size:13px;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
+ol{list-style:none;margin:0 auto;padding:0 12px 28px;max-width:720px}
+li{padding:12px 4px;border-bottom:1px solid var(--ln);cursor:pointer}
+li.cur{color:var(--ac);font-weight:600}
+li small{display:block;color:var(--mu);font-weight:400}
+li.fin span{text-decoration:line-through;color:var(--mu)}li.fin span::before{content:"✓ "}
+.empty{margin:auto;text-align:center;color:var(--mu);max-width:32ch;font-size:15px}
+</style>
+</head>
+<body>
+<div class="drive" id="drive">
+  <div class="hd"><h1 id="t">No episodes yet</h1><p id="s"></p></div>
+  <input id="seek" type="range" min="0" max="1" step="1" value="0" aria-label="Position">
+  <div class="time"><span id="pos">0:00</span><b id="rt">1×</b><span id="len">0:00</span></div>
+  <div class="grid">
+    <button id="play" aria-label="Play or pause">▶</button>
+    <button id="back">−15s</button><button id="f10">+10s</button>
+    <button id="fwd">+30s</button><button id="f150">+2:30</button>
+    <button id="prev" aria-label="Previous episode">⏮</button><button id="next" aria-label="Next episode">⏭</button>
+    <button id="slow" class="spd"><span>−</span><small>slower</small></button><button id="fast" class="spd"><span>+</span><small>faster</small></button>
+  </div>
+  <div class="st" id="st" aria-live="polite"></div>
+  <button id="cp" class="cp">Copy finished (0)</button>
+  <div class="hint" id="hint">Scroll down for the episode list. Tap ▶ Play all in your queue to load a fresh list.</div>
+</div>
+<ol id="list"></ol>
+<audio id="au" preload="metadata"></audio>
+<script>
+// The episode list arrives in the link's #fragment (never sent to any server) and is kept on this phone.
+const $ = id => document.getElementById(id), au = $('au');
+const R = [1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const ls = { get(k, d){ try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+             set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+function fromHash(){
+  const m = location.hash.match(/[#&]q=([A-Za-z0-9_-]+)/); if (!m) return null;
+  try {
+    const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = Uint8Array.from(b, c => c.charCodeAt(0));
+    const arr = JSON.parse(new TextDecoder().decode(bytes));
+    return arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0 })).filter(x => x.a);
+  } catch (e) { return null; }
+}
+let Q = fromHash();
+if (Q) { ls.set('pp-queue', Q); history.replaceState(null, '', location.pathname); }
+else Q = ls.get('pp-queue', []);
+let rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0;
+const saved = ls.get('pp-pos', null);
+if (saved) { const k = Q.findIndex(q => q.id === saved.id); if (k >= 0) { i = k; startAt = saved.t || 0; } }
+const f = s => { s = Math.floor(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, '0'); return h ? h + ':' + String(m).padStart(2, '0') + ':' + x : m + ':' + x; };
+const mine = () => Q.filter(q => q.id && H.has(q.id)).map(q => q.id);
+function savePos(){ const q = Q[i]; if (q) ls.set('pp-pos', { id: q.id, t: au.currentTime || startAt || 0 }); }
+function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); mark(); }
+function mark(){
+  $('rt').textContent = rate + '×';
+  [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
+  const q = Q[i]; $('st').textContent = q && H.has(q.id) ? '✓ Finished' : '';
+  $('cp').textContent = 'Copy finished (' + mine().length + ')';
+}
+function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
+const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
+function load(k, go, t){
+  i = k; const q = Q[i]; if (!q) return;
+  startAt = t || 0; au.src = q.a; au.playbackRate = rate;
+  $('t').textContent = q.t; $('s').textContent = q.s + ' · ' + (i + 1) + ' of ' + Q.length;
+  $('seek').value = 0; $('pos').textContent = f(startAt); $('len').textContent = q.d ? f(q.d) : '0:00';
+  if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
+  mark(); savePos();
+  if (go) au.play().catch(() => { $('play').textContent = '▶'; });
+}
+$('cp').onclick = async () => {
+  const m = mine(); if (!m.length) { $('cp').textContent = 'Nothing finished yet'; setTimeout(mark, 1500); return; }
+  const code = 'LQFIN:' + m.join(','); let ok = false;
+  try { await navigator.clipboard.writeText(code); ok = true; } catch (e) {}
+  if (!ok) { const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch (e) {} ta.remove(); }
+  if (ok) { $('cp').textContent = 'Copied ' + m.length + '. Paste it in the queue'; $('cp').classList.add('ok'); setTimeout(() => { $('cp').classList.remove('ok'); mark(); }, 4000); }
+  else { $('cp').textContent = 'Could not copy. Long-press the code below'; $('hint').textContent = code; }
+};
+$('slow').onclick = () => setRate(R.filter(x => x < rate).pop() || R[0]);
+$('fast').onclick = () => setRate(R.find(x => x > rate) || R[R.length - 1]);
+$('play').onclick = () => { if (!Q.length) return; au.paused ? au.play().catch(() => {}) : au.pause(); };
+$('prev').onclick = () => { if (i > 0) load(i - 1, true, 0); };
+$('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true, 0); };
+$('back').onclick = () => sk(-15); $('f10').onclick = () => sk(10); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
+$('seek').oninput = e => { au.currentTime = +e.target.value; };
+au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; };
+au.onpause = () => { $('play').textContent = '▶'; savePos(); };
+au.onended = () => { heard(); if (i < Q.length - 1) load(i + 1, true, 0); else { $('st').textContent = 'All done. Every episode in this list is finished.'; } };
+au.onerror = () => { if (Q[i]) $('st').textContent = 'This episode would not load. Tap ⏭ to skip it.'; };
+au.onloadedmetadata = () => { au.playbackRate = rate; if (startAt && startAt < (au.duration || 0) - 5) au.currentTime = startAt; startAt = 0; $('seek').max = Math.floor(au.duration || 0); $('len').textContent = f(au.duration); };
+au.ontimeupdate = () => {
+  $('seek').value = Math.floor(au.currentTime); $('pos').textContent = f(au.currentTime);
+  if (au.duration && au.currentTime >= au.duration * 0.9) heard();
+  if (Date.now() - lastSave > 5000) { lastSave = Date.now(); savePos(); }
+};
+document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); });
+if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
+  m.setActionHandler('play', () => au.play()); m.setActionHandler('pause', () => au.pause());
+  m.setActionHandler('nexttrack', () => $('next').onclick()); m.setActionHandler('previoustrack', () => $('prev').onclick());
+  m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-15)); } catch (e) {} }
+const L = $('list');
+Q.forEach((q, k) => { const li = document.createElement('li'); const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (q.d ? ' · ' + f(q.d) : ''); li.append(a, b); li.onclick = () => { load(k, true, 0); window.scrollTo(0, 0); }; L.appendChild(li); });
+if (Q.length) load(i, false, startAt);
+else $('s').textContent = 'Open your Listening Queue and tap ▶ Play all to load your podcasts here.';
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
