@@ -43,8 +43,8 @@ li.fin span{text-decoration:line-through;color:var(--mu)}li.fin span::before{con
   <div class="time"><span id="pos">0:00</span><b id="rt">1×</b><span id="len">0:00</span></div>
   <div class="grid">
     <button id="play" aria-label="Play or pause">▶</button>
-    <button id="back">−15s</button><button id="f10">+10s</button>
-    <button id="fwd">+30s</button><button id="f150">+2:30</button>
+    <button id="back">−30s</button><button id="fwd">+30s</button>
+    <button id="b150">−2:30</button><button id="f150">+2:30</button>
     <button id="prev" aria-label="Previous episode">⏮</button><button id="next" aria-label="Next episode">⏭</button>
     <button id="slow" class="spd"><span>−</span><small>slower</small></button><button id="fast" class="spd"><span>+</span><small>faster</small></button>
   </div>
@@ -109,7 +109,7 @@ $('fast').onclick = () => setRate(R.find(x => x > rate) || R[R.length - 1]);
 $('play').onclick = () => { if (!Q.length) return; au.paused ? au.play().catch(() => {}) : au.pause(); };
 $('prev').onclick = () => { if (i > 0) load(i - 1, true, 0); };
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true, 0); };
-$('back').onclick = () => sk(-15); $('f10').onclick = () => sk(10); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
+$('back').onclick = () => sk(-30); $('b150').onclick = () => sk(-150); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
 $('seek').oninput = e => { au.currentTime = +e.target.value; };
 au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; };
 au.onpause = () => { $('play').textContent = '▶'; savePos(); };
@@ -125,7 +125,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) saveP
 if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
   m.setActionHandler('play', () => au.play()); m.setActionHandler('pause', () => au.pause());
   m.setActionHandler('nexttrack', () => $('next').onclick()); m.setActionHandler('previoustrack', () => $('prev').onclick());
-  m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-15)); } catch (e) {} }
+  m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-30)); } catch (e) {} }
 const L = $('list');
 Q.forEach((q, k) => { const li = document.createElement('li'); const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (q.d ? ' · ' + f(q.d) : ''); li.append(a, b); li.onclick = () => { load(k, true, 0); window.scrollTo(0, 0); }; L.appendChild(li); });
 if (Q.length) load(i, false, startAt);
