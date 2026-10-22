@@ -27,12 +27,17 @@ button:active{filter:brightness(.85);transform:scale(.97)}
 .spd span{font-size:44px}.spd small{font-size:15px;font-weight:600;color:var(--mu)}
 .st{text-align:center;font-size:14px;font-weight:600;color:var(--ok);min-height:20px}
 .cp{width:100%;min-height:64px;font-size:21px}.cp.ok{background:var(--ac);color:var(--on)}
+.fn{width:100%;min-height:72px;font-size:23px;color:var(--ok);box-shadow:inset 0 0 0 2px var(--ok)}
+.st.err{color:#b23a24}
 .hint{text-align:center;color:var(--mu);font-size:13px;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
 ol{list-style:none;margin:0 auto;padding:0 12px 28px;max-width:720px}
-li{padding:12px 4px;border-bottom:1px solid var(--ln);cursor:pointer}
+li{padding:10px 0 10px 4px;border-bottom:1px solid var(--ln);cursor:pointer;display:flex;align-items:center;gap:8px}
+li .lt{flex:1;min-width:0}
+li .mv{flex:0 0 auto;width:46px;height:46px;border-radius:12px;font-size:20px;box-shadow:none;background:var(--bg);border:1px solid var(--ln)}
+li .mv:disabled{opacity:.3}
 li.cur{color:var(--ac);font-weight:600}
 li small{display:block;color:var(--mu);font-weight:400}
-li.fin span{text-decoration:line-through;color:var(--mu)}li.fin span::before{content:"✓ "}
+li.fin .lt span{text-decoration:line-through;color:var(--mu)}li.fin .lt span::before{content:"✓ "}
 .empty{margin:auto;text-align:center;color:var(--mu);max-width:32ch;font-size:15px}
 </style>
 </head>
@@ -49,8 +54,9 @@ li.fin span{text-decoration:line-through;color:var(--mu)}li.fin span::before{con
     <button id="slow" class="spd"><span>−</span><small>slower</small></button><button id="fast" class="spd"><span>+</span><small>faster</small></button>
   </div>
   <div class="st" id="st" aria-live="polite"></div>
+  <button id="fn" class="fn">✓ Finished · next episode</button>
   <button id="cp" class="cp">Copy finished (0)</button>
-  <div class="hint" id="hint">Scroll down for the episode list. Tap ▶ Play all in your queue to load a fresh list.</div>
+  <div class="hint" id="hint">Scroll down for the episode list; use ↑ ↓ there to change the order. Tap ▶ Play all in your queue to load a fresh list.</div>
 </div>
 <ol id="list"></ol>
 <audio id="au" preload="metadata"></audio>
@@ -60,8 +66,10 @@ const $ = id => document.getElementById(id), au = $('au');
 const R = [1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 const ls = { get(k, d){ try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
              set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+let hashOrderAt = 0;
 function fromHash(){
   const m = location.hash.match(/[#&]q=([A-Za-z0-9_-]+)/); if (!m) return null;
+  const o = location.hash.match(/[#&]o=(\d+)/); hashOrderAt = o ? +o[1] : 0;
   try {
     const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
     const bytes = Uint8Array.from(b, c => c.charCodeAt(0));
@@ -69,15 +77,26 @@ function fromHash(){
     return arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0 })).filter(x => x.a);
   } catch (e) { return null; }
 }
+// Keeps the slots the known episodes occupy, but fills them in the given order; new episodes keep their place.
+function slotMerge(list, ids){
+  const pos = new Map(ids.map((id, n) => [id, n]));
+  const known = list.filter(q => pos.has(q.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id));
+  let k = 0; return list.map(q => pos.has(q.id) ? known[k++] : q);
+}
 let Q = fromHash();
-if (Q) { ls.set('pp-queue', Q); history.replaceState(null, '', location.pathname); }
+if (Q) {
+  const po = ls.get('pp-order', null);
+  if (po && po.ids && po.at > hashOrderAt) Q = slotMerge(Q, po.ids);
+  else ls.set('pp-order', { ids: Q.map(q => q.id), at: hashOrderAt });
+  ls.set('pp-queue', Q); history.replaceState(null, '', location.pathname);
+}
 else Q = ls.get('pp-queue', []);
-let rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0;
+let rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0, lastGood = 0, tries = 0, wantPlay = false, retryTimer = null;
 const saved = ls.get('pp-pos', null);
 if (saved) { const k = Q.findIndex(q => q.id === saved.id); if (k >= 0) { i = k; startAt = saved.t || 0; } }
 const f = s => { s = Math.floor(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, '0'); return h ? h + ':' + String(m).padStart(2, '0') + ':' + x : m + ':' + x; };
 const mine = () => Q.filter(q => q.id && H.has(q.id)).map(q => q.id);
-function savePos(){ const q = Q[i]; if (q) ls.set('pp-pos', { id: q.id, t: au.currentTime || startAt || 0 }); }
+function savePos(){ const q = Q[i]; if (q) ls.set('pp-pos', { id: q.id, t: au.currentTime || lastGood || startAt || 0 }); }
 function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); mark(); }
 function mark(){
   $('rt').textContent = rate + '×';
@@ -89,6 +108,7 @@ function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark()
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
+  clearTimeout(retryTimer); tries = 0; wantPlay = !!go; lastGood = t || 0; $('st').classList.remove('err');
   startAt = t || 0; au.src = q.a; au.playbackRate = rate;
   $('t').textContent = q.t; $('s').textContent = q.s + ' · ' + (i + 1) + ' of ' + Q.length;
   $('seek').value = 0; $('pos').textContent = f(startAt); $('len').textContent = q.d ? f(q.d) : '0:00';
@@ -106,28 +126,78 @@ $('cp').onclick = async () => {
 };
 $('slow').onclick = () => setRate(R.filter(x => x < rate).pop() || R[0]);
 $('fast').onclick = () => setRate(R.find(x => x > rate) || R[R.length - 1]);
-$('play').onclick = () => { if (!Q.length) return; au.paused ? au.play().catch(() => {}) : au.pause(); };
+function broken(){ return !!au.error || au.networkState === 3 || !au.currentSrc; }
+// Reload the same episode at the last good position (audio links can expire while paused, or the signal drops).
+function recover(){
+  const q = Q[i]; if (!q) return;
+  startAt = lastGood || au.currentTime || startAt || 0;
+  au.removeAttribute('src'); au.load(); au.src = q.a; au.playbackRate = rate;
+  if (wantPlay) au.play().catch(() => {});
+}
+function playNow(){
+  if (!Q.length) return; wantPlay = true;
+  if (broken()) { tries = 0; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; recover(); return; }
+  au.play().catch(() => { if (broken()) recover(); });
+}
+$('play').onclick = () => { if (!Q.length) return; au.paused ? playNow() : (wantPlay = false, au.pause()); };
+function finishNext(){
+  const q = Q[i]; if (!q) return;
+  if (q.id && !H.has(q.id)) { H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); }
+  let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
+  if (k < Q.length) { load(k, true, 0); window.scrollTo(0, 0); }
+  else { au.pause(); mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
+}
+$('fn').onclick = finishNext;
 $('prev').onclick = () => { if (i > 0) load(i - 1, true, 0); };
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true, 0); };
 $('back').onclick = () => sk(-30); $('b150').onclick = () => sk(-150); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
 $('seek').oninput = e => { au.currentTime = +e.target.value; };
 au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; };
-au.onpause = () => { $('play').textContent = '▶'; savePos(); };
+au.onplaying = () => { tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
+au.onpause = () => { $('play').textContent = '▶'; if (!au.error) savePos(); };
 au.onended = () => { heard(); if (i < Q.length - 1) load(i + 1, true, 0); else { $('st').textContent = 'All done. Every episode in this list is finished.'; } };
-au.onerror = () => { if (Q[i]) $('st').textContent = 'This episode would not load. Tap ⏭ to skip it.'; };
+au.onerror = () => {
+  if (!Q[i] || !au.getAttribute('src')) return;
+  if (tries < 3) { tries++; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; clearTimeout(retryTimer); retryTimer = setTimeout(recover, 1500 * tries); return; }
+  $('st').classList.add('err'); $('st').textContent = 'This episode would not load. Tap ▶ to try again, or ⏭ to skip it.';
+};
 au.onloadedmetadata = () => { au.playbackRate = rate; if (startAt && startAt < (au.duration || 0) - 5) au.currentTime = startAt; startAt = 0; $('seek').max = Math.floor(au.duration || 0); $('len').textContent = f(au.duration); };
 au.ontimeupdate = () => {
-  $('seek').value = Math.floor(au.currentTime); $('pos').textContent = f(au.currentTime);
+  $('seek').value = Math.floor(au.currentTime); $('pos').textContent = f(au.currentTime); if (au.currentTime > 0) lastGood = au.currentTime;
   if (au.duration && au.currentTime >= au.duration * 0.9) heard();
   if (Date.now() - lastSave > 5000) { lastSave = Date.now(); savePos(); }
 };
 document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); });
 if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
-  m.setActionHandler('play', () => au.play()); m.setActionHandler('pause', () => au.pause());
+  m.setActionHandler('play', () => playNow()); m.setActionHandler('pause', () => au.pause());
   m.setActionHandler('nexttrack', () => $('next').onclick()); m.setActionHandler('previoustrack', () => $('prev').onclick());
   m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-30)); } catch (e) {} }
 const L = $('list');
-Q.forEach((q, k) => { const li = document.createElement('li'); const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (q.d ? ' · ' + f(q.d) : ''); li.append(a, b); li.onclick = () => { load(k, true, 0); window.scrollTo(0, 0); }; L.appendChild(li); });
+function move(k, d){
+  const j = k + d; if (j < 0 || j >= Q.length) return;
+  const cur = Q[i] && Q[i].id;
+  [Q[k], Q[j]] = [Q[j], Q[k]];
+  i = Math.max(0, Q.findIndex(q => q.id === cur));
+  ls.set('pp-queue', Q); ls.set('pp-order', { ids: Q.map(q => q.id), at: Date.now() });
+  renderList(); if (Q[i]) $('s').textContent = Q[i].s + ' · ' + (i + 1) + ' of ' + Q.length;
+}
+function renderList(){
+  L.innerHTML = '';
+  Q.forEach((q, k) => {
+    const li = document.createElement('li');
+    const box = document.createElement('div'); box.className = 'lt';
+    const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (q.d ? ' · ' + f(q.d) : '');
+    box.append(a, b);
+    const up = document.createElement('button'); up.className = 'mv'; up.textContent = '↑'; up.setAttribute('aria-label', 'Move up'); up.disabled = k === 0;
+    const dn = document.createElement('button'); dn.className = 'mv'; dn.textContent = '↓'; dn.setAttribute('aria-label', 'Move down'); dn.disabled = k === Q.length - 1;
+    up.onclick = e => { e.stopPropagation(); move(k, -1); }; dn.onclick = e => { e.stopPropagation(); move(k, 1); };
+    li.append(box, up, dn);
+    box.onclick = () => { load(k, true, 0); window.scrollTo(0, 0); };
+    L.appendChild(li);
+  });
+  mark();
+}
+renderList();
 if (Q.length) load(i, false, startAt);
 else $('s').textContent = 'Open your Listening Queue and tap ▶ Play all to load your podcasts here.';
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
