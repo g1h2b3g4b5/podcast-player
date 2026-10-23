@@ -152,12 +152,32 @@ $('prev').onclick = () => { if (i > 0) load(i - 1, true, 0); };
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true, 0); };
 $('back').onclick = () => sk(-30); $('b150').onclick = () => sk(-150); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
 $('seek').oninput = e => { au.currentTime = +e.target.value; };
-au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; };
+au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
 au.onplaying = () => { tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
 au.onpause = () => { $('play').textContent = '▶'; if (!au.error) savePos(); };
-au.onended = () => { heard(); if (i < Q.length - 1) load(i + 1, true, 0); else { $('st').textContent = 'All done. Every episode in this list is finished.'; } };
+// Moving on at the end: 'ended' is the normal signal, but streams with inserted ads often break off
+// in the last moments (an error or a stall instead of 'ended'), so those count as the end too.
+let advancing = false, lastT = -1, stuckSince = 0;
+function nearEnd(){ const d = au.duration || (Q[i] && Q[i].d) || 0; const t = au.currentTime || lastGood || 0; return d > 0 && t > 0 && d - t < Math.max(45, d * 0.02); }
+function advance(){
+  if (advancing) return; advancing = true; setTimeout(() => { advancing = false; }, 2500);
+  clearTimeout(retryTimer); heard();
+  if (i < Q.length - 1) {
+    load(i + 1, true, 0);
+    au.play().catch(() => { $('st').textContent = 'Tap ▶ to start the next episode.'; });
+  } else { wantPlay = false; $('st').textContent = 'All done. Every episode in this list is finished.'; }
+}
+au.onended = advance;
+// Safety net: still "playing" but stuck in the last stretch for 8+ seconds means the stream ended without saying so.
+setInterval(() => {
+  if (!wantPlay || au.paused || !Q[i]) { stuckSince = 0; lastT = -1; return; }
+  const t = au.currentTime;
+  if (t !== lastT) { lastT = t; stuckSince = Date.now(); return; }
+  if (nearEnd() && stuckSince && Date.now() - stuckSince > 8000) advance();
+}, 2000);
 au.onerror = () => {
   if (!Q[i] || !au.getAttribute('src')) return;
+  if (wantPlay && nearEnd()) { advance(); return; }
   if (tries < 3) { tries++; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; clearTimeout(retryTimer); retryTimer = setTimeout(recover, 1500 * tries); return; }
   $('st').classList.add('err'); $('st').textContent = 'This episode would not load. Tap ▶ to try again, or ⏭ to skip it.';
 };
@@ -169,7 +189,7 @@ au.ontimeupdate = () => {
 };
 document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); });
 if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
-  m.setActionHandler('play', () => playNow()); m.setActionHandler('pause', () => au.pause());
+  m.setActionHandler('play', () => playNow()); m.setActionHandler('pause', () => { wantPlay = false; au.pause(); });
   m.setActionHandler('nexttrack', () => $('next').onclick()); m.setActionHandler('previoustrack', () => $('prev').onclick());
   m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-30)); } catch (e) {} }
 const L = $('list');
