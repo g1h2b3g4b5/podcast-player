@@ -84,6 +84,7 @@ function slotMerge(list, ids){
   let k = 0; return list.map(q => pos.has(q.id) ? known[k++] : q);
 }
 let Q = fromHash();
+const freshList = !!Q;
 if (Q) {
   const po = ls.get('pp-order', null);
   if (po && po.ids && po.at > hashOrderAt) Q = slotMerge(Q, po.ids);
@@ -92,12 +93,32 @@ if (Q) {
 }
 else Q = ls.get('pp-queue', []);
 let rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0, lastGood = 0, tries = 0, wantPlay = false, retryTimer = null;
-const saved = ls.get('pp-pos', null);
-if (saved) { const k = Q.findIndex(q => q.id === saved.id); if (k >= 0) { i = k; startAt = saved.t || 0; } }
+// Every episode remembers its own place, so skipping around never loses where you were in any of them.
+let P = ls.get('pp-posmap', {});
+const savedPos = ls.get('pp-pos', null);
+if (savedPos && savedPos.id && P[savedPos.id] == null) P[savedPos.id] = savedPos.t || 0;
+const resumeAt = q => (q && q.id && !H.has(q.id) && P[q.id]) || 0;
+if (freshList) {
+  // A new Play all starts at the top of the queue: the first episode not yet finished, in queue order.
+  const k = Q.findIndex(q => !(q.id && H.has(q.id)));
+  i = k >= 0 ? k : 0; startAt = resumeAt(Q[i]);
+} else if (savedPos) {
+  // Reopened from the home screen: pick up the episode that was playing.
+  const k = Q.findIndex(q => q.id === savedPos.id); if (k >= 0) { i = k; startAt = resumeAt(Q[k]) || savedPos.t || 0; }
+}
 const f = s => { s = Math.floor(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, '0'); return h ? h + ':' + String(m).padStart(2, '0') + ':' + x : m + ':' + x; };
 const mine = () => Q.filter(q => q.id && H.has(q.id)).map(q => q.id);
-function savePos(){ const q = Q[i]; if (q) ls.set('pp-pos', { id: q.id, t: au.currentTime || lastGood || startAt || 0 }); }
-function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); mark(); }
+function savePos(){
+  const q = Q[i]; if (!q) return;
+  const t = au.currentTime || lastGood || startAt || 0;
+  ls.set('pp-pos', { id: q.id, t });
+  if (q.id && t > 0) {
+    delete P[q.id]; P[q.id] = t;
+    const ks = Object.keys(P); if (ks.length > 300) ks.slice(0, ks.length - 300).forEach(x => delete P[x]);
+    ls.set('pp-posmap', P);
+  }
+}
+function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); mark(); }
 function mark(){
   $('rt').textContent = rate + '×';
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
@@ -108,6 +129,7 @@ function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark()
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
+  if (t == null) t = resumeAt(q);
   clearTimeout(retryTimer); tries = 0; wantPlay = !!go; lastGood = t || 0; $('st').classList.remove('err');
   startAt = t || 0; au.src = q.a; au.playbackRate = rate;
   $('t').textContent = q.t; $('s').textContent = q.s + ' · ' + (i + 1) + ' of ' + Q.length;
@@ -144,12 +166,12 @@ function finishNext(){
   const q = Q[i]; if (!q) return;
   if (q.id && !H.has(q.id)) { H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); }
   let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
-  if (k < Q.length) { load(k, true, 0); window.scrollTo(0, 0); }
+  if (k < Q.length) { load(k, true); window.scrollTo(0, 0); }
   else { au.pause(); mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
 }
 $('fn').onclick = finishNext;
-$('prev').onclick = () => { if (i > 0) load(i - 1, true, 0); };
-$('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true, 0); };
+$('prev').onclick = () => { if (i > 0) load(i - 1, true); };
+$('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
 $('back').onclick = () => sk(-30); $('b150').onclick = () => sk(-150); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
 $('seek').oninput = e => { au.currentTime = +e.target.value; };
 au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
@@ -163,7 +185,7 @@ function advance(){
   if (advancing) return; advancing = true; setTimeout(() => { advancing = false; }, 2500);
   clearTimeout(retryTimer); heard();
   if (i < Q.length - 1) {
-    load(i + 1, true, 0);
+    load(i + 1, true);
     au.play().catch(() => { $('st').textContent = 'Tap ▶ to start the next episode.'; });
   } else { wantPlay = false; $('st').textContent = 'All done. Every episode in this list is finished.'; }
 }
@@ -212,7 +234,7 @@ function renderList(){
     const dn = document.createElement('button'); dn.className = 'mv'; dn.textContent = '↓'; dn.setAttribute('aria-label', 'Move down'); dn.disabled = k === Q.length - 1;
     up.onclick = e => { e.stopPropagation(); move(k, -1); }; dn.onclick = e => { e.stopPropagation(); move(k, 1); };
     li.append(box, up, dn);
-    box.onclick = () => { load(k, true, 0); window.scrollTo(0, 0); };
+    box.onclick = () => { load(k, true); window.scrollTo(0, 0); };
     L.appendChild(li);
   });
   mark();
