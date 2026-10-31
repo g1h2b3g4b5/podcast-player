@@ -165,10 +165,22 @@ function recover(){
   au.removeAttribute('src'); au.load(); au.src = q.a; au.playbackRate = rate;
   if (wantPlay) au.play().catch(() => {});
 }
+let pausedAt = 0, kickTimer = null;
 function playNow(){
   if (!Q.length) return; wantPlay = true;
-  if (broken()) { tries = 0; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; recover(); return; }
+  // After a long pause Android may have frozen the page or the stream link may be stale, so reload at the saved spot.
+  const stale = pausedAt && Date.now() - pausedAt > 90000;
+  if (broken() || stale) { tries = 0; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; pausedAt = 0; recover(); kick(); return; }
   au.play().catch(() => { if (broken()) recover(); });
+  kick();
+}
+// If play was requested but nothing is actually playing a few seconds later, reload once and try again.
+function kick(){
+  clearTimeout(kickTimer);
+  kickTimer = setTimeout(() => {
+    if (wantPlay && au.paused === false && au.readyState >= 3 && au.currentTime !== lastT) return;
+    if (wantPlay && (au.paused || au.readyState < 3)) { recover(); }
+  }, 6000);
 }
 $('play').onclick = () => { if (!Q.length) return; au.paused ? playNow() : (wantPlay = false, au.pause()); };
 function finishNext(){
@@ -184,8 +196,8 @@ $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
 $('back').onclick = () => sk(-30); $('b150').onclick = () => sk(-150); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
 $('seek').oninput = e => { au.currentTime = +e.target.value; };
 au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
-au.onplaying = () => { tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
-au.onpause = () => { $('play').textContent = '▶'; if (!au.error) savePos(); };
+au.onplaying = () => { clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
+au.onpause = () => { $('play').textContent = '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
 // Moving on at the end: 'ended' is the normal signal, but streams with inserted ads often break off
 // in the last moments (an error or a stall instead of 'ended'), so those count as the end too.
 let advancing = false, lastT = -1, stuckSince = 0;
@@ -218,11 +230,17 @@ au.ontimeupdate = () => {
   if (au.duration && au.currentTime >= au.duration * 0.9) heard();
   if (Date.now() - lastSave > 5000) { lastSave = Date.now(); savePos(); }
 };
-document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); else syncSession(); });
 if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
   m.setActionHandler('play', () => playNow()); m.setActionHandler('pause', () => { wantPlay = false; au.pause(); });
   m.setActionHandler('nexttrack', () => $('next').onclick()); m.setActionHandler('previoustrack', () => $('prev').onclick());
-  m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-30)); } catch (e) {} }
+  m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-30));
+  try { m.setActionHandler('seekto', d => { if (d && d.seekTime != null) au.currentTime = d.seekTime; }); } catch (e) {} } catch (e) {} }
+function syncSession(){ if (!('mediaSession' in navigator)) return; try {
+  navigator.mediaSession.playbackState = au.paused ? 'paused' : 'playing';
+  if (au.duration && isFinite(au.duration)) navigator.mediaSession.setPositionState({ duration: au.duration, playbackRate: au.playbackRate || 1, position: Math.min(au.currentTime || 0, au.duration) });
+} catch (e) {} }
+au.onseeked = syncSession; au.ondurationchange = syncSession; au.onratechange = syncSession;
 const L = $('list');
 function move(k, d){
   const j = k + d; if (j < 0 || j >= Q.length) return;
