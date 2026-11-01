@@ -95,7 +95,7 @@ if (Q) {
   ls.set('pp-queue', Q); history.replaceState(null, '', location.pathname);
 }
 else Q = ls.get('pp-queue', []);
-let rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0, lastGood = 0, tries = 0, wantPlay = false, retryTimer = null;
+let pastEnd = 0, rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0, lastGood = 0, tries = 0, wantPlay = false, retryTimer = null;
 // Every episode remembers its own place, so skipping around never loses where you were in any of them.
 let P = ls.get('pp-posmap', {});
 const savedPos = ls.get('pp-pos', null);
@@ -133,7 +133,7 @@ const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Mat
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
   if (t == null) t = resumeAt(q);
-  clearTimeout(retryTimer); tries = 0; wantPlay = !!go; lastGood = t || 0; $('st').classList.remove('err');
+  clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; lastGood = t || 0; $('st').classList.remove('err');
   startAt = t || 0; au.src = q.a; au.playbackRate = rate;
   $('t').textContent = q.t; $('s').textContent = q.s + ' · ' + (i + 1) + ' of ' + Q.length;
   $('seek').value = 0; $('pos').textContent = f(startAt); $('len').textContent = q.d ? f(q.d) : '0:00';
@@ -227,9 +227,13 @@ au.onerror = () => {
 au.onloadedmetadata = () => { au.playbackRate = rate; if (startAt && startAt < (au.duration || 0) - 5) au.currentTime = startAt; startAt = 0; $('seek').max = Math.floor(au.duration || 0); $('len').textContent = f(au.duration); };
 au.ontimeupdate = () => {
   $('seek').value = Math.floor(au.currentTime); $('pos').textContent = f(au.currentTime); if (au.currentTime > 0) lastGood = au.currentTime;
-  if (au.duration && au.currentTime >= au.duration * 0.9) heard();
+  // Finished = heard the last 10% by actually listening: the player must have been past 90% for
+  // 3 seconds of natural playback, so a +2:30 tap that lands near the end does not cross it off.
+  if (au.duration && au.currentTime >= au.duration * 0.9) { if (!pastEnd) pastEnd = Date.now(); else if (Date.now() - pastEnd > 3000) heard(); }
+  else pastEnd = 0;
   if (Date.now() - lastSave > 5000) { lastSave = Date.now(); savePos(); }
 };
+au.onseeking = () => { pastEnd = 0; };
 document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); else syncSession(); });
 if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
   m.setActionHandler('play', () => playNow()); m.setActionHandler('pause', () => { wantPlay = false; au.pause(); });
