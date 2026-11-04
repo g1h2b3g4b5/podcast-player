@@ -79,7 +79,7 @@ function fromHash(){
     const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
     const bytes = Uint8Array.from(b, c => c.charCodeAt(0));
     const arr = JSON.parse(new TextDecoder().decode(bytes));
-    return arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0 })).filter(x => x.a);
+    return arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '' })).filter(x => x.a);
   } catch (e) { return null; }
 }
 // Keeps the slots the known episodes occupy, but fills them in the given order; new episodes keep their place.
@@ -111,6 +111,9 @@ if (freshList) {
   // Reopened from the home screen: pick up the episode that was playing.
   const k = Q.findIndex(q => q.id === savedPos.id); if (k >= 0) { i = k; startAt = resumeAt(Q[k]) || savedPos.t || 0; }
 }
+// Release date of an episode, e.g. "Nov 3" (the year is added when it is not the current one).
+const rel = q => { const d = new Date(q && q.p); if (!q || !q.p || isNaN(d)) return ''; return d.toLocaleDateString([], d.getFullYear() === new Date().getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' }); };
+const sub = (q, k) => q.s + (rel(q) ? ' · ' + rel(q) : '') + ' · ' + (k + 1) + ' of ' + Q.length;
 const f = s => { s = Math.floor(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, '0'); return h ? h + ':' + String(m).padStart(2, '0') + ':' + x : m + ':' + x; };
 const mine = () => Q.filter(q => q.id && H.has(q.id)).map(q => q.id);
 function savePos(){
@@ -157,7 +160,7 @@ function load(k, go, t){
   if (t == null) t = resumeAt(q);
   clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; lastGood = t || 0; $('st').classList.remove('err');
   startAt = t || 0; au.src = q.a; au.playbackRate = rate;
-  $('t').textContent = q.t; $('s').textContent = q.s + ' · ' + (i + 1) + ' of ' + Q.length;
+  $('t').textContent = q.t; $('s').textContent = sub(q, i);
   $('seek').value = 0; $('pos').textContent = f(startAt); $('len').textContent = q.d ? f(q.d) : '0:00';
   if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
   mark(); savePos();
@@ -275,14 +278,14 @@ function move(k, d){
   [Q[k], Q[j]] = [Q[j], Q[k]];
   i = Math.max(0, Q.findIndex(q => q.id === cur));
   ls.set('pp-queue', Q); ls.set('pp-order', { ids: Q.map(q => q.id), at: Date.now() });
-  renderList(); if (Q[i]) $('s').textContent = Q[i].s + ' · ' + (i + 1) + ' of ' + Q.length;
+  renderList(); if (Q[i]) $('s').textContent = sub(Q[i], i);
 }
 function renderList(){
   L.innerHTML = '';
   Q.forEach((q, k) => {
     const li = document.createElement('li');
     const box = document.createElement('div'); box.className = 'lt';
-    const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (q.d ? ' · ' + f(q.d) : '');
+    const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (rel(q) ? ' · ' + rel(q) : '') + (q.d ? ' · ' + f(q.d) : '');
     box.append(a, b);
     const up = document.createElement('button'); up.className = 'mv'; up.textContent = '↑'; up.setAttribute('aria-label', 'Move up'); up.disabled = k === 0;
     const dn = document.createElement('button'); dn.className = 'mv'; dn.textContent = '↓'; dn.setAttribute('aria-label', 'Move down'); dn.disabled = k === Q.length - 1;
