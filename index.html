@@ -58,7 +58,7 @@ li.fin .lt span{text-decoration:line-through;color:var(--mu)}li.fin .lt span::be
   </div>
   <div class="st" id="st" aria-live="polite"></div>
   <button id="fn" class="fn">✓ Finished · next episode</button>
-  <button id="cp" class="cp">Copy finished (0)</button>
+  <div id="cp" class="hint" hidden></div>
   <div class="hint" id="hint">Scroll down for the episode list; use ↑ ↓ there to change the order. Tap ▶ Play all in your queue to load a fresh list.</div>
 </div>
 <ol id="list"></ol>
@@ -151,7 +151,7 @@ function mark(){
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
   const q = Q[i]; $('st').textContent = q && H.has(q.id) ? '✓ Finished' : '';
   const ob = ls.get('pp-outbox', []), cfg = loop();
-  $('cp').textContent = 'Copy finished (' + mine().length + ')' + (cfg ? (ob.length ? ' \u00b7 ' + ob.length + ' waiting to sync' : ' \u00b7 synced to queue') : '');
+  $('cp').hidden = !(cfg && ob.length); $('cp').textContent = ob.length + ' finished, waiting to sync to your queue';
 }
 function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
@@ -166,14 +166,6 @@ function load(k, go, t){
   mark(); savePos();
   if (go) au.play().catch(() => { $('play').textContent = '▶'; });
 }
-$('cp').onclick = async () => {
-  const m = mine(); if (!m.length) { $('cp').textContent = 'Nothing finished yet'; setTimeout(mark, 1500); return; }
-  const code = 'LQFIN:' + m.join(','); let ok = false;
-  try { await navigator.clipboard.writeText(code); ok = true; } catch (e) {}
-  if (!ok) { const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch (e) {} ta.remove(); }
-  if (ok) { $('cp').textContent = 'Copied ' + m.length + '. Paste it in the queue'; $('cp').classList.add('ok'); setTimeout(() => { $('cp').classList.remove('ok'); mark(); }, 4000); }
-  else { $('cp').textContent = 'Could not copy. Long-press the code below'; $('hint').textContent = code; }
-};
 $('ct').onclick = async () => {
   const q = Q[i]; if (!q) return; let ok = false;
   try { await navigator.clipboard.writeText(q.t); ok = true; } catch (e) {}
