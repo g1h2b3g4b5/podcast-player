@@ -61,7 +61,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
   <div class="sumbox" id="sumbox" hidden>
     <div class="sumhd" id="sumhd">Summary</div>
     <div class="sumtx" id="sumtx" aria-live="polite"></div>
-    <div class="sumbar"><button id="full">▶ Full episode</button><button id="here" class="one">Play from here</button><button id="wo" class="one" hidden>👁 Watch the original video</button></div>
+    <div class="sumbar"><button id="full">▶ Full episode</button><button id="here" class="one">Play from here</button><button id="wo" class="one" hidden>＋ Add original to Daily news</button></div>
   </div>
   <div class="grid">
     <button id="play" aria-label="Play or pause">▶</button>
@@ -116,6 +116,7 @@ else Q = ls.get('pp-queue', []);
 let pastEnd = 0, rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0, lastGood = 0, tries = 0, wantPlay = false, retryTimer = null;
 // Every episode remembers its own place, so skipping around never loses where you were in any of them.
 let P = ls.get('pp-posmap', {});
+const WO = new Set(ls.get('pp-wo', []));
 const savedPos = ls.get('pp-pos', null);
 if (savedPos && savedPos.id && P[savedPos.id] == null) P[savedPos.id] = savedPos.t || 0;
 const resumeAt = q => (q && q.id && !H.has(q.id) && P[q.id]) || 0;
@@ -161,7 +162,7 @@ async function flush(){
   } catch (e) {} finally { flushing = false; mark(); }
 }
 addEventListener('online', flush);
-function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); outboxAdd(q.id); mark(); }
+function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); mark(); }
 function mark(){
   $('rt').textContent = inSum ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
@@ -225,7 +226,7 @@ function kick(){
 $('play').onclick = () => { if (!Q.length) return; if (inSum) { speaking ? pauseSum() : resumeSum(); return; } au.paused ? playNow() : (wantPlay = false, au.pause()); };
 function finishNext(){
   const q = Q[i]; if (!q) return;
-  if (q.id && !H.has(q.id)) { H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); outboxAdd(q.id); }
+  if (q.id && !H.has(q.id)) { H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); }
   let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
   if (k < Q.length) { load(k, true); window.scrollTo(0, 0); }
   else { au.pause(); mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
@@ -312,7 +313,7 @@ function showPara(){
   $('sumtx').textContent = sm[sumK][1];
   $('sumhd').textContent = 'Summary · ' + (sumK + 1) + ' of ' + sm.length + ' · from ' + f(sm[sumK][0]);
   $('seek').max = sm.length - 1; $('seek').value = sumK; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length;
-  $('wo').hidden = !!q.a || !q.v; $('full').hidden = true; $('here').hidden = !q.a;
+  $('wo').hidden = !!q.a || !q.v; $('wo').disabled = WO.has(q.id); $('wo').textContent = WO.has(q.id) ? '✓ Original added to Daily news' : '＋ Add original to Daily news'; $('full').hidden = true; $('here').hidden = !q.a;
   $('here').textContent = '▶ Play the episode from ' + f(sm[sumK][0]);
 }
 function enterSum(go){
@@ -359,14 +360,10 @@ function toEpisode(at){
   P[q.id] = t; ls.set('pp-posmap', P);
   load(i, true, t); renderList();
 }
+// Add original: flags this video so the queue puts it back in Daily news (Playlist tab). The summary keeps playing.
 function watchOrig(){
-  const q = Q[i]; if (!q || q.a || !q.v) return;
-  pauseSum(); const t = sumOf(q) ? Math.floor(sumOf(q)[sumK][0]) : 0;
-  outboxAdd('w-' + q.id);   // the queue puts this video back in Daily news; it is not marked heard
-  H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); delete P[q.id]; ls.set('pp-posmap', P);
-  window.open('https://www.youtube.com/watch?v=' + encodeURIComponent(q.v) + (t ? '&t=' + t + 's' : ''), '_blank');
-  let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
-  if (k < Q.length) { load(k, true); window.scrollTo(0, 0); } else { mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
+  const q = Q[i]; if (!q || q.a || !q.v || WO.has(q.id)) return;
+  WO.add(q.id); ls.set('pp-wo', [...WO].slice(-300)); outboxAdd('w-' + q.id); showPara();
 }
 $('wo').onclick = watchOrig;
 $('full').onclick = () => toEpisode(false);
