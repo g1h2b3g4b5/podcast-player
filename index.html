@@ -85,7 +85,7 @@ const ls = { get(k, d){ try { const v = localStorage.getItem(k); return v == nul
              set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
 let hashOrderAt = 0;
 const unb64 = t => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-const toItems = arr => arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '', v: x[6] || '', sm: Array.isArray(x[7]) && x[7].length ? x[7] : null })).filter(x => x.a || x.sm);
+const toItems = arr => arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '', v: x[6] || '', sm: Array.isArray(x[7]) && x[7].length ? x[7] : null, sa: Array.isArray(x[8]) ? x[8][0] || '' : '', ss: Array.isArray(x[8]) && Array.isArray(x[8][1]) ? x[8][1] : null })).filter(x => x.a || x.sm);
 // Lists with read-aloud summaries arrive deflated (#z=); unpack them into the plain form before the page starts.
 const zm = location.hash.match(/[#&]z=([A-Za-z0-9_-]+)/);
 let zItems = null;
@@ -138,8 +138,9 @@ function savePos(){
   const q = Q[i]; if (!q) return;
   const t = au.currentTime || lastGood || startAt || 0;
   ls.set('pp-pos', { id: q.id, t });
+  const key = inSA ? 'S:' + q.id : q.id;
   if (q.id && t > 0) {
-    delete P[q.id]; P[q.id] = t;
+    delete P[key]; P[key] = t;
     const ks = Object.keys(P); if (ks.length > 300) ks.slice(0, ks.length - 300).forEach(x => delete P[x]);
     ls.set('pp-posmap', P);
   }
@@ -165,7 +166,7 @@ async function flush(){
 addEventListener('online', flush);
 function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); mark(); }
 function mark(){
-  $('rt').textContent = inSum ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
+  $('rt').textContent = (inSum || inSA) ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
   const q = Q[i]; $('st').textContent = q && H.has(q.id) ? '✓ Finished' : '';
   const ob = ls.get('pp-outbox', []), cfg = loop();
@@ -174,12 +175,13 @@ function mark(){
 function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
 // Summaries have their own reading speed (0.5x to 2x). A change picks up from the last word spoken, not the paragraph start.
 let vrate = +ls.get('pp-vrate', 0.9) || 0.9, sumChar = 0, sawBoundary = false, spokeAt = 0, spokeFrom = 0;
-function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 10; ls.set('pp-vrate', vrate); mark(); if (inSum && speaking) { notePlace(); speakPara(sumK, sumChar); } }
+function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 10; ls.set('pp-vrate', vrate); if (inSA) au.playbackRate = vrate; mark(); if (inSum && speaking) { notePlace(); speakPara(sumK, sumChar); } }
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
-  stopSum();
-  if (useSummary(q)) { enterSum(go); return; }
+  stopSum(); inSA = false;
+  if (useSA(q)) { loadSA(q, go, t); return; }
+  if (useSummary(q) && synth) { enterSum(go); return; }
   $('drive').classList.remove('sum'); $('sumbox').hidden = true; labels(false);
   if (!q.a) { $('st').textContent = ''; $('t').textContent = q.t; $('s').textContent = sub(q, i); mark(); return; }
   if (t == null) t = resumeAt(q);
@@ -197,14 +199,14 @@ $('ct').onclick = async () => {
   if (!ok) { const ta = document.createElement('textarea'); ta.value = q.t; document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch (e) {} ta.remove(); }
   $('ct').textContent = ok ? '✓' : '!'; $('ct').classList.toggle('ok', ok); setTimeout(() => { $('ct').textContent = '⧉'; $('ct').classList.remove('ok'); }, 1200);
 };
-$('slow').onclick = () => inSum ? setVRate(vrate - 0.1) : setRate(R.filter(x => x < rate).pop() || R[0]);
-$('fast').onclick = () => inSum ? setVRate(vrate + 0.1) : setRate(R.find(x => x > rate) || R[R.length - 1]);
+$('slow').onclick = () => (inSum || inSA) ? setVRate(vrate - 0.1) : setRate(R.filter(x => x < rate).pop() || R[0]);
+$('fast').onclick = () => (inSum || inSA) ? setVRate(vrate + 0.1) : setRate(R.find(x => x > rate) || R[R.length - 1]);
 function broken(){ return !!au.error || au.networkState === 3 || !au.currentSrc; }
 // Reload the same episode at the last good position (audio links can expire while paused, or the signal drops).
 function recover(){
   const q = Q[i]; if (!q) return;
   startAt = lastGood || au.currentTime || startAt || 0;
-  au.removeAttribute('src'); au.load(); au.src = q.a; au.playbackRate = rate;
+  au.removeAttribute('src'); au.load(); au.src = inSA ? q.sa : q.a; au.playbackRate = inSA ? vrate : rate;
   if (wantPlay) au.play().catch(() => {});
 }
 let pausedAt = 0, kickTimer = null;
@@ -235,10 +237,10 @@ function finishNext(){
 $('fn').onclick = finishNext;
 $('prev').onclick = () => { if (i > 0) { load(i - 1, true); return; } const q = Q[i]; if (q && sumOf(q)) { sumMode[q.id] = 0; ls.set('pp-sum', sumMode); } load(i, true, 0); };  // on the first item, start it over
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
-$('back').onclick = () => inSum ? jumpPara(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-150); $('fwd').onclick = () => inSum ? jumpPara(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(150);
+$('back').onclick = () => inSum ? jumpPara(-1) : inSA ? jumpSA(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-150); $('fwd').onclick = () => inSum ? jumpPara(1) : inSA ? jumpSA(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(150);
 $('seek').oninput = e => { if (inSum) { scrubbing = true; scrubTo(+e.target.value, false); return; } au.currentTime = +e.target.value; };
 $('seek').onchange = e => { if (inSum) { scrubbing = false; scrubTo(+e.target.value, true); } };
-au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
+au.onplay = () => { au.playbackRate = inSA ? vrate : rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
 au.onplaying = () => { clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
 au.onpause = () => { $('play').textContent = '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
 // Moving on at the end: 'ended' is the normal signal, but streams with inserted ads often break off
@@ -263,13 +265,15 @@ setInterval(() => {
 }, 2000);
 au.onerror = () => {
   if (!Q[i] || !au.getAttribute('src')) return;
+  if (inSA) { saFail.add(Q[i].id); const go = wantPlay; au.removeAttribute('src'); load(i, go); return; }
   if (wantPlay && nearEnd()) { advance(); return; }
   if (tries < 3) { tries++; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; clearTimeout(retryTimer); retryTimer = setTimeout(recover, 1500 * tries); return; }
   $('st').classList.add('err'); $('st').textContent = 'This episode would not load. Tap ▶ to try again, or ⏭ to skip it.';
 };
-au.onloadedmetadata = () => { au.playbackRate = rate; if (startAt && startAt < (au.duration || 0) - 5) au.currentTime = startAt; startAt = 0; $('seek').max = Math.floor(au.duration || 0); $('len').textContent = f(au.duration); };
+au.onloadedmetadata = () => { au.playbackRate = inSA ? vrate : rate; if (startAt && startAt < (au.duration || 0) - 5) au.currentTime = startAt; startAt = 0; $('seek').max = Math.floor(au.duration || 0); $('len').textContent = f(au.duration); };
 au.ontimeupdate = () => {
   $('seek').value = Math.floor(au.currentTime); $('pos').textContent = f(au.currentTime); if (au.currentTime > 0) lastGood = au.currentTime;
+  if (inSA) { const k = paraAt(Q[i], au.currentTime); if (k !== sumK) { sumK = k; showPara(); } }
   // Finished = heard the last 10% by actually listening: the player must have been past 90% for
   // 3 seconds of natural playback, so a +2:30 tap that lands near the end does not cross it off.
   if (au.duration && au.currentTime >= au.duration * 0.9) { if (!pastEnd) pastEnd = Date.now(); else if (Date.now() - pastEnd > 3000) heard(); }
@@ -282,7 +286,7 @@ flush();
 if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
   m.setActionHandler('play', () => inSum ? resumeSum() : playNow()); m.setActionHandler('pause', () => { if (inSum) { pauseSum(); return; } wantPlay = false; au.pause(); });
   m.setActionHandler('nexttrack', () => $('next').onclick()); m.setActionHandler('previoustrack', () => $('prev').onclick());
-  m.setActionHandler('seekforward', () => inSum ? jumpPara(1) : sk(30)); m.setActionHandler('seekbackward', () => inSum ? jumpPara(-1) : sk(-30));
+  m.setActionHandler('seekforward', () => inSum ? jumpPara(1) : inSA ? jumpSA(1) : sk(30)); m.setActionHandler('seekbackward', () => inSum ? jumpPara(-1) : inSA ? jumpSA(-1) : sk(-30));
   try { m.setActionHandler('seekto', d => { if (d && d.seekTime != null) au.currentTime = d.seekTime; }); } catch (e) {} } catch (e) {} }
 function syncSession(){ if (!('mediaSession' in navigator)) return; try {
   navigator.mediaSession.playbackState = au.paused ? 'paused' : 'playing';
@@ -302,7 +306,31 @@ const sil = new Audio(); sil.loop = true;
   v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true); b.fill(128, 44);
   sil.src = URL.createObjectURL(new Blob([b], { type: 'audio/wav' })); sil.volume = 0.01; }
 const sumOf = q => q && Array.isArray(q.sm) && q.sm.length ? q.sm : null;
-const useSummary = q => !!(sumOf(q) && synth && (!q.a || (!H.has(q.id) && sumMode[q.id] !== 'ep')));  // a video has nothing else to play, so it always reads its summary
+const useSummary = q => !!(sumOf(q) && (synth || q.sa) && (!q.a || (!H.has(q.id) && sumMode[q.id] !== 'ep')));
+// A summary with a recorded reading (sa) plays as real audio: it keeps going in the background and on the lock screen.
+// If that file will not load, the phone's voice reads the text instead.
+const saFail = new Set();
+let inSA = false;
+const useSA = q => useSummary(q) && !!q.sa && !saFail.has(q.id);
+const paraAt = (q, t) => { const ss = (q && q.ss) || []; let k = 0; while (k < ss.length - 1 && t + 0.3 >= ss[k + 1]) k++; return k; };
+function loadSA(q, go, t){
+  inSA = true; inSum = false;
+  $('drive').classList.add('sum'); $('sumbox').hidden = false; labels(true);
+  t = t === 0 ? 0 : (P['S:' + q.id] || 0);
+  clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; lastGood = t; $('st').classList.remove('err'); $('st').textContent = '';
+  startAt = t; au.src = q.sa; au.playbackRate = vrate;
+  $('t').textContent = q.t; $('s').textContent = 'Summary · ' + sub(q, i);
+  $('seek').value = 0; $('pos').textContent = f(startAt); $('len').textContent = '0:00';
+  if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: 'Summary · ' + q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
+  sumK = paraAt(q, t); showPara(); mark(); savePos();
+  if (go) au.play().catch(() => { $('play').textContent = '▶'; });
+}
+function jumpSA(d){
+  const q = Q[i], ss = (q && q.ss) || []; if (!ss.length) return;
+  let k = paraAt(q, au.currentTime);
+  if (d < 0 && au.currentTime - ss[k] > 3) d = 0;   // back once: start of this paragraph; again: the one before
+  k = Math.max(0, Math.min(ss.length - 1, k + d)); au.currentTime = ss[k] + (k ? 0.05 : 0); sumK = k; showPara();
+}  // a video has nothing else to play, so it always reads its summary
 function saveSum(){ const q = Q[i]; if (q && inSum) { delete sumMode[q.id]; sumMode[q.id] = sumK; const ks = Object.keys(sumMode); if (ks.length > 200) ks.slice(0, ks.length - 200).forEach(x => delete sumMode[x]); ls.set('pp-sum', sumMode); } }
 function voice(){ const vs = synth.getVoices() || []; return vs.find(v => /^en[-_]US/i.test(v.lang) && /natural|neural|online/i.test(v.name)) || vs.find(v => /^en[-_]US/i.test(v.lang) && v.localService) || vs.find(v => /^en/i.test(v.lang)) || null; }
 function labels(on){
@@ -315,7 +343,7 @@ function showPara(){
   $('sumtx').textContent = sm[sumK][1];
   $('sumhd').textContent = sumOpen ? '▾ Hide summary text' : '▸ Show summary text';
   $('sumhd').setAttribute('aria-expanded', String(sumOpen)); $('sumtx').hidden = !sumOpen;
-  $('seek').max = sumTotal(sm); $('seek').value = sumBefore(sm, sumK) + sumChar; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length;
+  if (!inSA) { $('seek').max = sumTotal(sm); $('seek').value = sumBefore(sm, sumK) + sumChar; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length; }
   $('wo').hidden = !!q.a || !q.v; $('wo').disabled = WO.has(q.id); $('wo').textContent = WO.has(q.id) ? '✓ Original added to Daily news' : '＋ Add original to Daily news'; $('full').hidden = true; $('here').hidden = !q.a;
   $('here').textContent = '▶ Play the episode from ' + f(sm[sumK][0]);
 }
