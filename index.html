@@ -164,7 +164,7 @@ async function flush(){
   } catch (e) {} finally { flushing = false; mark(); }
 }
 addEventListener('online', flush);
-function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); mark(); }
+function heard(){ const q = Q[i]; if (q && q.id && (inSA || inSum) && sumMode[q.id] !== 'ep') { sumMode[q.id] = 'sd'; ls.set('pp-sum', sumMode); delete P['S:' + q.id]; ls.set('pp-posmap', P); } if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); mark(); }
 function mark(){
   $('rt').textContent = (inSum || inSA) ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
@@ -306,7 +306,7 @@ const sil = new Audio(); sil.loop = true;
   v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true); b.fill(128, 44);
   sil.src = URL.createObjectURL(new Blob([b], { type: 'audio/wav' })); sil.volume = 0.01; }
 const sumOf = q => q && Array.isArray(q.sm) && q.sm.length ? q.sm : null;
-const useSummary = q => !!(sumOf(q) && (synth || q.sa) && (!q.a || (!H.has(q.id) && sumMode[q.id] !== 'ep')));
+const useSummary = q => !!(sumOf(q) && (synth || q.sa) && (!q.a || (sumMode[q.id] !== 'ep' && (!H.has(q.id) || sumMode[q.id] === 'sd'))));
 // A summary with a recorded reading (sa) plays as real audio: it keeps going in the background and on the lock screen.
 // If that file will not load, the phone's voice reads the text instead.
 const saFail = new Set();
