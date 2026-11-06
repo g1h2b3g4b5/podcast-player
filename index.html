@@ -41,6 +41,15 @@ li .mv:disabled{opacity:.3}
 li.cur{color:var(--ac);font-weight:600}
 li small{display:block;color:var(--mu);font-weight:400}
 li.fin .lt span{text-decoration:line-through;color:var(--mu)}li.fin .lt span::before{content:"✓ "}
+.sumbox{background:var(--bt);border-radius:18px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.sumhd{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ac);margin-bottom:6px}
+.sumtx{font-size:19px;line-height:1.45;max-height:34vh;overflow-y:auto;-webkit-user-select:text;user-select:text}
+.sumbar{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.sumbar button{font-size:19px;min-height:60px;border-radius:14px;background:var(--bg);box-shadow:inset 0 0 0 2px var(--ac);color:var(--ac)}
+.sumbar button.one{grid-column:1/-1}
+.drive.sum .grid{min-height:360px;grid-template-rows:1.3fr 1fr 1fr 1fr 1fr}
+.drive.sum #back,.drive.sum #fwd,.drive.sum #b150,.drive.sum #f150{font-size:24px}
+li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);margin-left:4px}
 .empty{margin:auto;text-align:center;color:var(--mu);max-width:32ch;font-size:15px}
 </style>
 </head>
@@ -49,6 +58,11 @@ li.fin .lt span{text-decoration:line-through;color:var(--mu)}li.fin .lt span::be
   <div class="hd"><div><h1 id="t">No episodes yet</h1><p id="s"></p></div><button id="ct" class="ct" aria-label="Copy episode title">⧉</button></div>
   <input id="seek" type="range" min="0" max="1" step="1" value="0" aria-label="Position">
   <div class="time"><span id="pos">0:00</span><b id="rt">1×</b><span id="len">0:00</span></div>
+  <div class="sumbox" id="sumbox" hidden>
+    <div class="sumhd" id="sumhd">Summary</div>
+    <div class="sumtx" id="sumtx" aria-live="polite"></div>
+    <div class="sumbar"><button id="full">▶ Full episode</button><button id="here">Play from here</button></div>
+  </div>
   <div class="grid">
     <button id="play" aria-label="Play or pause">▶</button>
     <button id="back">−30s</button><button id="fwd">+30s</button>
@@ -63,24 +77,26 @@ li.fin .lt span{text-decoration:line-through;color:var(--mu)}li.fin .lt span::be
 </div>
 <ol id="list"></ol>
 <audio id="au" preload="metadata"></audio>
-<script>
+<script type="module">
 // The episode list arrives in the link's #fragment (never sent to any server) and is kept on this phone.
 const $ = id => document.getElementById(id), au = $('au');
 const R = [1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 const ls = { get(k, d){ try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
              set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
 let hashOrderAt = 0;
+const unb64 = t => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const toItems = arr => arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '', v: x[6] || '', sm: Array.isArray(x[7]) && x[7].length ? x[7] : null })).filter(x => x.a || x.sm);
+// Lists with read-aloud summaries arrive deflated (#z=); unpack them into the plain form before the page starts.
+const zm = location.hash.match(/[#&]z=([A-Za-z0-9_-]+)/);
+let zItems = null;
+if (zm) { try { const txt = await new Response(new Blob([unb64(zm[1])]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text(); zItems = toItems(JSON.parse(txt)); } catch (e) { zItems = null; } }
 function fromHash(){
-  const m = location.hash.match(/[#&]q=([A-Za-z0-9_-]+)/); if (!m) return null;
+  const m = location.hash.match(/[#&]q=([A-Za-z0-9_-]+)/); if (!m && !zm) return null;
   const o = location.hash.match(/[#&]o=(\d+)/); hashOrderAt = o ? +o[1] : 0;
   const lf = location.hash.match(/[#&]f=([A-Za-z0-9_-]+)/), le = location.hash.match(/[#&]e=(\d+)/);
   if (lf && le) ls.set('pp-loop', { f: lf[1], e: le[1] }); else if (location.hash.match(/[#&]f=0(&|$)/)) ls.set('pp-loop', null);
-  try {
-    const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
-    const bytes = Uint8Array.from(b, c => c.charCodeAt(0));
-    const arr = JSON.parse(new TextDecoder().decode(bytes));
-    return arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '' })).filter(x => x.a);
-  } catch (e) { return null; }
+  if (zm) return zItems;
+  try { return toItems(JSON.parse(new TextDecoder().decode(unb64(m[1])))); } catch (e) { return null; }
 }
 // Keeps the slots the known episodes occupy, but fills them in the given order; new episodes keep their place.
 function slotMerge(list, ids){
@@ -153,10 +169,14 @@ function mark(){
   const ob = ls.get('pp-outbox', []), cfg = loop();
   $('cp').hidden = !(cfg && ob.length); $('cp').textContent = ob.length + ' finished, waiting to sync to your queue';
 }
-function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
+function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); if (inSum && speaking) speakPara(sumK); }
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
+  stopSum();
+  if (useSummary(q)) { enterSum(go); return; }
+  $('drive').classList.remove('sum'); $('sumbox').hidden = true; labels(false);
+  if (!q.a) { $('t').textContent = q.t; $('s').textContent = sub(q, i); mark(); return; }
   if (t == null) t = resumeAt(q);
   clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; lastGood = t || 0; $('st').classList.remove('err');
   startAt = t || 0; au.src = q.a; au.playbackRate = rate;
@@ -199,7 +219,7 @@ function kick(){
     if (wantPlay && (au.paused || au.readyState < 3)) { recover(); }
   }, 6000);
 }
-$('play').onclick = () => { if (!Q.length) return; au.paused ? playNow() : (wantPlay = false, au.pause()); };
+$('play').onclick = () => { if (!Q.length) return; if (inSum) { speaking ? pauseSum() : resumeSum(); return; } au.paused ? playNow() : (wantPlay = false, au.pause()); };
 function finishNext(){
   const q = Q[i]; if (!q) return;
   if (q.id && !H.has(q.id)) { H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); outboxAdd(q.id); }
@@ -210,8 +230,8 @@ function finishNext(){
 $('fn').onclick = finishNext;
 $('prev').onclick = () => { if (i > 0) load(i - 1, true); };
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
-$('back').onclick = () => sk(-30); $('b150').onclick = () => sk(-150); $('fwd').onclick = () => sk(30); $('f150').onclick = () => sk(150);
-$('seek').oninput = e => { au.currentTime = +e.target.value; };
+$('back').onclick = () => inSum ? jumpPara(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-150); $('fwd').onclick = () => inSum ? jumpPara(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(150);
+$('seek').oninput = e => { if (inSum) { sumK = +e.target.value; saveSum(); showPara(); if (speaking) speakPara(sumK); return; } au.currentTime = +e.target.value; };
 au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
 au.onplaying = () => { clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
 au.onpause = () => { $('play').textContent = '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
@@ -254,15 +274,88 @@ au.onseeking = () => { pastEnd = 0; };
 document.addEventListener('visibilitychange', () => { if (document.hidden) savePos(); else { syncSession(); flush(); } });
 flush();
 if ('mediaSession' in navigator) { try { const m = navigator.mediaSession;
-  m.setActionHandler('play', () => playNow()); m.setActionHandler('pause', () => { wantPlay = false; au.pause(); });
+  m.setActionHandler('play', () => inSum ? resumeSum() : playNow()); m.setActionHandler('pause', () => { if (inSum) { pauseSum(); return; } wantPlay = false; au.pause(); });
   m.setActionHandler('nexttrack', () => $('next').onclick()); m.setActionHandler('previoustrack', () => $('prev').onclick());
-  m.setActionHandler('seekforward', () => sk(30)); m.setActionHandler('seekbackward', () => sk(-30));
+  m.setActionHandler('seekforward', () => inSum ? jumpPara(1) : sk(30)); m.setActionHandler('seekbackward', () => inSum ? jumpPara(-1) : sk(-30));
   try { m.setActionHandler('seekto', d => { if (d && d.seekTime != null) au.currentTime = d.seekTime; }); } catch (e) {} } catch (e) {} }
 function syncSession(){ if (!('mediaSession' in navigator)) return; try {
   navigator.mediaSession.playbackState = au.paused ? 'paused' : 'playing';
   if (au.duration && isFinite(au.duration)) navigator.mediaSession.setPositionState({ duration: au.duration, playbackRate: au.playbackRate || 1, position: Math.min(au.currentTime || 0, au.duration) });
 } catch (e) {} }
 au.onseeked = syncSession; au.ondurationchange = syncSession; au.onratechange = syncSession;
+// ---- Read-aloud summaries. An item with a summary starts in summary mode: the phone's voice reads one paragraph
+// at a time (about one per 5-10 minutes of episode). Finishing the summary counts as hearing the episode.
+// Full episode / Play from here switch to the real audio (videos open on YouTube instead).
+const sumMode = ls.get('pp-sum', {});            // id -> paragraph index, or 'ep' once switched to the episode
+let inSum = false, sumK = 0, speaking = false, utt = null;
+const synth = window.speechSynthesis || null;
+// A silent loop keeps Android's media controls and lock screen attached while the voice reads.
+const sil = new Audio(); sil.loop = true;
+{ const n = 8000, b = new Uint8Array(44 + n), v = new DataView(b.buffer), w = (o, s2) => [...s2].forEach((c, j) => b[o + j] = c.charCodeAt(0));
+  w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true); b.fill(128, 44);
+  sil.src = URL.createObjectURL(new Blob([b], { type: 'audio/wav' })); sil.volume = 0.01; }
+const sumOf = q => q && Array.isArray(q.sm) && q.sm.length ? q.sm : null;
+const useSummary = q => !!(sumOf(q) && synth && !H.has(q.id) && (sumMode[q.id] !== 'ep' || !q.a));
+function saveSum(){ const q = Q[i]; if (q && inSum) { delete sumMode[q.id]; sumMode[q.id] = sumK; const ks = Object.keys(sumMode); if (ks.length > 200) ks.slice(0, ks.length - 200).forEach(x => delete sumMode[x]); ls.set('pp-sum', sumMode); } }
+function voice(){ const vs = synth.getVoices() || []; return vs.find(v => /^en[-_]US/i.test(v.lang) && /natural|neural|online/i.test(v.name)) || vs.find(v => /^en[-_]US/i.test(v.lang) && v.localService) || vs.find(v => /^en/i.test(v.lang)) || null; }
+function labels(on){
+  $('back').textContent = on ? '−1 ¶' : '−30s'; $('fwd').textContent = on ? '+1 ¶' : '+30s';
+  $('b150').textContent = on ? '−3 ¶' : '−2:30'; $('f150').textContent = on ? '+3 ¶' : '+2:30';
+}
+function showPara(){
+  const q = Q[i], sm = sumOf(q); if (!sm) return;
+  sumK = Math.max(0, Math.min(sm.length - 1, sumK));
+  $('sumtx').textContent = sm[sumK][1];
+  $('sumhd').textContent = 'Summary · ' + (sumK + 1) + ' of ' + sm.length + ' · from ' + f(sm[sumK][0]);
+  $('seek').max = sm.length - 1; $('seek').value = sumK; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length;
+  $('full').textContent = q.a ? '▶ Full episode' : '▶ Open video'; $('here').textContent = q.a ? 'Play from ' + f(sm[sumK][0]) : 'Video at ' + f(sm[sumK][0]);
+}
+function enterSum(go){
+  const q = Q[i]; inSum = true; wantPlay = false; lastGood = 0; startAt = 0; pastEnd = 0; clearTimeout(retryTimer); clearTimeout(kickTimer);
+  au.pause(); au.removeAttribute('src'); au.load();
+  const saved = sumMode[q.id]; sumK = typeof saved === 'number' ? saved : 0;
+  $('drive').classList.add('sum'); $('sumbox').hidden = false; labels(true);
+  $('t').textContent = q.t; $('s').textContent = 'Summary · ' + sub(q, i);
+  if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: 'Summary · ' + q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
+  showPara(); mark(); savePos(); $('play').textContent = '▶';
+  if (go) resumeSum();
+}
+function speakPara(k){
+  const q = Q[i], sm = sumOf(q); if (!sm || !synth) return;
+  sumK = k; saveSum(); showPara();
+  synth.cancel();
+  const u = new SpeechSynthesisUtterance(sm[sumK][1]); utt = u;
+  const vo = voice(); if (vo) { u.voice = vo; u.lang = vo.lang; } else u.lang = 'en-US';
+  u.rate = Math.min(rate, 3);
+  u.onend = () => { if (utt !== u || !inSum || !speaking) return; if (sumK < sm.length - 1) speakPara(sumK + 1); else sumDone(); };
+  u.onerror = e => { if (utt !== u || !inSum) return; if (e && (e.error === 'interrupted' || e.error === 'canceled')) return; speaking = false; $('play').textContent = '▶'; $('st').textContent = 'The phone’s voice stopped. Tap ▶ to go on.'; };
+  speaking = true; $('play').textContent = '❚❚';
+  synth.speak(u);
+  sil.play().catch(() => {});
+  if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
+}
+function resumeSum(){ if (!inSum) return; $('st').textContent = ''; speakPara(sumK); }
+function pauseSum(){ speaking = false; utt = null; if (synth) synth.cancel(); sil.pause(); $('play').textContent = '▶'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} }
+function stopSum(){ if (inSum || speaking) pauseSum(); inSum = false; }
+function jumpPara(d){ const sm = sumOf(Q[i]); if (!sm) return; sumK = Math.max(0, Math.min(sm.length - 1, sumK + d)); saveSum(); showPara(); if (speaking) speakPara(sumK); }
+function sumDone(){
+  pauseSum(); heard();
+  let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
+  if (k < Q.length) { load(k, true); window.scrollTo(0, 0); }
+  else { $('st').textContent = 'All done. Every episode in this list is finished.'; }
+}
+function toEpisode(at){
+  const q = Q[i], sm = sumOf(q); if (!q) return;
+  if (!q.a) { const t = at ? sm[sumK][0] : 0; pauseSum(); window.open('https://www.youtube.com/watch?v=' + encodeURIComponent(q.v) + (t ? '&t=' + Math.floor(t) + 's' : ''), '_blank'); return; }
+  sumMode[q.id] = 'ep'; ls.set('pp-sum', sumMode);
+  const t = at && sm ? Math.max(0, sm[sumK][0] - 5) : 0;
+  P[q.id] = t; ls.set('pp-posmap', P);
+  load(i, true, t); renderList();
+}
+$('full').onclick = () => toEpisode(false);
+$('here').onclick = () => toEpisode(true);
+if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = () => {};
 const L = $('list');
 function move(k, d){
   const j = k + d; if (j < 0 || j >= Q.length) return;
@@ -279,6 +372,7 @@ function renderList(){
     const box = document.createElement('div'); box.className = 'lt';
     const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (rel(q) ? ' · ' + rel(q) : '') + (q.d ? ' · ' + f(q.d) : '');
     box.append(a, b);
+    if (q.sm && !H.has(q.id) && sumMode[q.id] !== 'ep') { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '\ud83d\udd0a summary'; b.appendChild(tg); }
     const up = document.createElement('button'); up.className = 'mv'; up.textContent = '↑'; up.setAttribute('aria-label', 'Move up'); up.disabled = k === 0;
     const dn = document.createElement('button'); dn.className = 'mv'; dn.textContent = '↓'; dn.setAttribute('aria-label', 'Move down'); dn.disabled = k === Q.length - 1;
     up.onclick = e => { e.stopPropagation(); move(k, -1); }; dn.onclick = e => { e.stopPropagation(); move(k, 1); };
