@@ -61,7 +61,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
   <div class="sumbox" id="sumbox" hidden>
     <div class="sumhd" id="sumhd">Summary</div>
     <div class="sumtx" id="sumtx" aria-live="polite"></div>
-    <div class="sumbar"><button id="full">▶ Full episode</button><button id="here">Play from here</button></div>
+    <div class="sumbar"><button id="full">▶ Full episode</button><button id="here">Play from here</button><button id="wo" class="one" hidden>👁 Watch the original in Daily news</button></div>
   </div>
   <div class="grid">
     <button id="play" aria-label="Play or pause">▶</button>
@@ -309,6 +309,7 @@ function showPara(){
   $('sumtx').textContent = sm[sumK][1];
   $('sumhd').textContent = 'Summary · ' + (sumK + 1) + ' of ' + sm.length + ' · from ' + f(sm[sumK][0]);
   $('seek').max = sm.length - 1; $('seek').value = sumK; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length;
+  $('wo').hidden = !!q.a || !q.v;
   $('full').textContent = q.a ? '▶ Full episode' : '▶ Open video'; $('here').textContent = q.a ? 'Play from ' + f(sm[sumK][0]) : 'Video at ' + f(sm[sumK][0]);
 }
 function enterSum(go){
@@ -353,6 +354,16 @@ function toEpisode(at){
   P[q.id] = t; ls.set('pp-posmap', P);
   load(i, true, t); renderList();
 }
+function watchOrig(){
+  const q = Q[i]; if (!q || q.a || !q.v) return;
+  pauseSum(); const t = sumOf(q) ? Math.floor(sumOf(q)[sumK][0]) : 0;
+  outboxAdd('w-' + q.id);   // the queue puts this video back in Daily news; it is not marked heard
+  H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); delete P[q.id]; ls.set('pp-posmap', P);
+  window.open('https://www.youtube.com/watch?v=' + encodeURIComponent(q.v) + (t ? '&t=' + t + 's' : ''), '_blank');
+  let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
+  if (k < Q.length) { load(k, true); window.scrollTo(0, 0); } else { mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
+}
+$('wo').onclick = watchOrig;
 $('full').onclick = () => toEpisode(false);
 $('here').onclick = () => toEpisode(true);
 if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = () => {};
