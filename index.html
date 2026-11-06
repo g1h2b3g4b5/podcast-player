@@ -180,7 +180,7 @@ function load(k, go, t){
   stopSum();
   if (useSummary(q)) { enterSum(go); return; }
   $('drive').classList.remove('sum'); $('sumbox').hidden = true; labels(false);
-  if (!q.a) { $('t').textContent = q.t; $('s').textContent = sub(q, i); mark(); return; }
+  if (!q.a) { $('st').textContent = ''; $('t').textContent = q.t; $('s').textContent = sub(q, i); mark(); return; }
   if (t == null) t = resumeAt(q);
   clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; lastGood = t || 0; $('st').classList.remove('err');
   startAt = t || 0; au.src = q.a; au.playbackRate = rate;
@@ -232,7 +232,7 @@ function finishNext(){
   else { au.pause(); mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
 }
 $('fn').onclick = finishNext;
-$('prev').onclick = () => { if (i > 0) load(i - 1, true); };
+$('prev').onclick = () => { if (i > 0) { load(i - 1, true); return; } const q = Q[i]; if (q && sumOf(q)) { sumMode[q.id] = 0; ls.set('pp-sum', sumMode); } load(i, true, 0); };  // on the first item, start it over
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
 $('back').onclick = () => inSum ? jumpPara(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-150); $('fwd').onclick = () => inSum ? jumpPara(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(150);
 $('seek').oninput = e => { if (inSum) { sumK = +e.target.value; saveSum(); showPara(); if (speaking) speakPara(sumK); return; } au.currentTime = +e.target.value; };
@@ -300,7 +300,7 @@ const sil = new Audio(); sil.loop = true;
   v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true); b.fill(128, 44);
   sil.src = URL.createObjectURL(new Blob([b], { type: 'audio/wav' })); sil.volume = 0.01; }
 const sumOf = q => q && Array.isArray(q.sm) && q.sm.length ? q.sm : null;
-const useSummary = q => !!(sumOf(q) && synth && !H.has(q.id) && (sumMode[q.id] !== 'ep' || !q.a));
+const useSummary = q => !!(sumOf(q) && synth && (!q.a || (!H.has(q.id) && sumMode[q.id] !== 'ep')));  // a video has nothing else to play, so it always reads its summary
 function saveSum(){ const q = Q[i]; if (q && inSum) { delete sumMode[q.id]; sumMode[q.id] = sumK; const ks = Object.keys(sumMode); if (ks.length > 200) ks.slice(0, ks.length - 200).forEach(x => delete sumMode[x]); ls.set('pp-sum', sumMode); } }
 function voice(){ const vs = synth.getVoices() || []; return vs.find(v => /^en[-_]US/i.test(v.lang) && /natural|neural|online/i.test(v.name)) || vs.find(v => /^en[-_]US/i.test(v.lang) && v.localService) || vs.find(v => /^en/i.test(v.lang)) || null; }
 function labels(on){
