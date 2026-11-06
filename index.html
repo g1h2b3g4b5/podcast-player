@@ -47,7 +47,7 @@ li.fin .lt span{text-decoration:line-through;color:var(--mu)}li.fin .lt span::be
 .sumbar{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
 .sumbar button{font-size:19px;min-height:60px;border-radius:14px;background:var(--bg);box-shadow:inset 0 0 0 2px var(--ac);color:var(--ac)}
 .sumbar button.one{grid-column:1/-1}
-.drive.sum .grid{min-height:360px;grid-template-rows:1.3fr 1fr 1fr 1fr 1fr}
+.drive.sum .grid{min-height:300px;grid-template-rows:1.3fr 1fr 1fr 1fr}.drive.sum #b150,.drive.sum #f150{display:none}
 .drive.sum #back,.drive.sum #fwd,.drive.sum #b150,.drive.sum #f150{font-size:24px}
 li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);margin-left:4px}
 .empty{margin:auto;text-align:center;color:var(--mu);max-width:32ch;font-size:15px}
@@ -61,7 +61,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
   <div class="sumbox" id="sumbox" hidden>
     <div class="sumhd" id="sumhd">Summary</div>
     <div class="sumtx" id="sumtx" aria-live="polite"></div>
-    <div class="sumbar"><button id="full">▶ Full episode</button><button id="here">Play from here</button><button id="wo" class="one" hidden>👁 Watch the original in Daily news</button></div>
+    <div class="sumbar"><button id="full">▶ Full episode</button><button id="here" class="one">Play from here</button><button id="wo" class="one" hidden>👁 Watch the original video</button></div>
   </div>
   <div class="grid">
     <button id="play" aria-label="Play or pause">▶</button>
@@ -163,13 +163,16 @@ async function flush(){
 addEventListener('online', flush);
 function heard(){ const q = Q[i]; if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); outboxAdd(q.id); mark(); }
 function mark(){
-  $('rt').textContent = rate + '×';
+  $('rt').textContent = inSum ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
   const q = Q[i]; $('st').textContent = q && H.has(q.id) ? '✓ Finished' : '';
   const ob = ls.get('pp-outbox', []), cfg = loop();
   $('cp').hidden = !(cfg && ob.length); $('cp').textContent = ob.length + ' finished, waiting to sync to your queue';
 }
-function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); if (inSum && speaking) speakPara(sumK); }
+function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
+// Summaries have their own reading speed (0.5x to 2x). A change picks up from the last word spoken, not the paragraph start.
+let vrate = +ls.get('pp-vrate', 0.9) || 0.9, sumChar = 0;
+function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 10; ls.set('pp-vrate', vrate); mark(); if (inSum && speaking) speakPara(sumK, sumChar); }
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
@@ -192,8 +195,8 @@ $('ct').onclick = async () => {
   if (!ok) { const ta = document.createElement('textarea'); ta.value = q.t; document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch (e) {} ta.remove(); }
   $('ct').textContent = ok ? '✓' : '!'; $('ct').classList.toggle('ok', ok); setTimeout(() => { $('ct').textContent = '⧉'; $('ct').classList.remove('ok'); }, 1200);
 };
-$('slow').onclick = () => setRate(R.filter(x => x < rate).pop() || R[0]);
-$('fast').onclick = () => setRate(R.find(x => x > rate) || R[R.length - 1]);
+$('slow').onclick = () => inSum ? setVRate(vrate - 0.1) : setRate(R.filter(x => x < rate).pop() || R[0]);
+$('fast').onclick = () => inSum ? setVRate(vrate + 0.1) : setRate(R.find(x => x > rate) || R[R.length - 1]);
 function broken(){ return !!au.error || au.networkState === 3 || !au.currentSrc; }
 // Reload the same episode at the last good position (audio links can expire while paused, or the signal drops).
 function recover(){
@@ -309,8 +312,8 @@ function showPara(){
   $('sumtx').textContent = sm[sumK][1];
   $('sumhd').textContent = 'Summary · ' + (sumK + 1) + ' of ' + sm.length + ' · from ' + f(sm[sumK][0]);
   $('seek').max = sm.length - 1; $('seek').value = sumK; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length;
-  $('wo').hidden = !!q.a || !q.v;
-  $('full').textContent = q.a ? '▶ Full episode' : '▶ Open video'; $('here').textContent = q.a ? 'Play from ' + f(sm[sumK][0]) : 'Video at ' + f(sm[sumK][0]);
+  $('wo').hidden = !!q.a || !q.v; $('full').hidden = true; $('here').hidden = !q.a;
+  $('here').textContent = '▶ Play the episode from ' + f(sm[sumK][0]);
 }
 function enterSum(go){
   const q = Q[i]; inSum = true; wantPlay = false; lastGood = 0; startAt = 0; pastEnd = 0; clearTimeout(retryTimer); clearTimeout(kickTimer);
@@ -322,13 +325,15 @@ function enterSum(go){
   showPara(); mark(); savePos(); $('play').textContent = '▶';
   if (go) resumeSum();
 }
-function speakPara(k){
+function speakPara(k, from){
   const q = Q[i], sm = sumOf(q); if (!sm || !synth) return;
   sumK = k; saveSum(); showPara();
   synth.cancel();
-  const u = new SpeechSynthesisUtterance(sm[sumK][1]); utt = u;
+  const off = from > 0 && from < sm[sumK][1].length ? from : 0; sumChar = off;
+  const u = new SpeechSynthesisUtterance(sm[sumK][1].slice(off)); utt = u;
+  u.onboundary = e => { if (utt === u && e.name !== 'sentence') sumChar = off + (e.charIndex || 0); };
   const vo = voice(); if (vo) { u.voice = vo; u.lang = vo.lang; } else u.lang = 'en-US';
-  u.rate = Math.min(rate, 3);
+  u.rate = vrate;
   u.onend = () => { if (utt !== u || !inSum || !speaking) return; if (sumK < sm.length - 1) speakPara(sumK + 1); else sumDone(); };
   u.onerror = e => { if (utt !== u || !inSum) return; if (e && (e.error === 'interrupted' || e.error === 'canceled')) return; speaking = false; $('play').textContent = '▶'; $('st').textContent = 'The phone’s voice stopped. Tap ▶ to go on.'; };
   speaking = true; $('play').textContent = '❚❚';
