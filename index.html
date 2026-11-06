@@ -236,7 +236,8 @@ $('fn').onclick = finishNext;
 $('prev').onclick = () => { if (i > 0) { load(i - 1, true); return; } const q = Q[i]; if (q && sumOf(q)) { sumMode[q.id] = 0; ls.set('pp-sum', sumMode); } load(i, true, 0); };  // on the first item, start it over
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
 $('back').onclick = () => inSum ? jumpPara(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-150); $('fwd').onclick = () => inSum ? jumpPara(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(150);
-$('seek').oninput = e => { if (inSum) { sumChar = 0; sumK = +e.target.value; saveSum(); showPara(); if (speaking) speakPara(sumK); return; } au.currentTime = +e.target.value; };
+$('seek').oninput = e => { if (inSum) { scrubbing = true; scrubTo(+e.target.value, false); return; } au.currentTime = +e.target.value; };
+$('seek').onchange = e => { if (inSum) { scrubbing = false; scrubTo(+e.target.value, true); } };
 au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
 au.onplaying = () => { clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
 au.onpause = () => { $('play').textContent = '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
@@ -314,7 +315,7 @@ function showPara(){
   $('sumtx').textContent = sm[sumK][1];
   $('sumhd').textContent = sumOpen ? '▾ Hide summary text' : '▸ Show summary text';
   $('sumhd').setAttribute('aria-expanded', String(sumOpen)); $('sumtx').hidden = !sumOpen;
-  $('seek').max = sm.length - 1; $('seek').value = sumK; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length;
+  $('seek').max = sumTotal(sm); $('seek').value = sumBefore(sm, sumK) + sumChar; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length;
   $('wo').hidden = !!q.a || !q.v; $('wo').disabled = WO.has(q.id); $('wo').textContent = WO.has(q.id) ? '✓ Original added to Daily news' : '＋ Add original to Daily news'; $('full').hidden = true; $('here').hidden = !q.a;
   $('here').textContent = '▶ Play the episode from ' + f(sm[sumK][0]);
 }
@@ -348,6 +349,27 @@ function speakPara(k, from){
 function resumeSum(){ if (!inSum) return; $('st').textContent = ''; speakPara(sumK, sumChar); }
 // Where the voice is in the paragraph: from its word events, or (if this phone's voice sends none) estimated from
 // the time spoken, then moved back to the start of that sentence so nothing is skipped.
+// Summary slider: one step per character of the whole summary. Dragging shows the paragraph; letting go starts
+// reading at the start of the sentence under your thumb.
+const sumTotal = sm => sm.reduce((n, p) => n + p[1].length, 0);
+const sumBefore = (sm, k) => sm.slice(0, k).reduce((n, p) => n + p[1].length, 0);
+let scrubbing = false;
+function scrubTo(v, go){
+  const sm = sumOf(Q[i]); if (!sm) return;
+  let k = 0; while (k < sm.length - 1 && v >= sumBefore(sm, k + 1)) k++;
+  const txt = sm[k][1]; let at = Math.max(0, Math.min(txt.length - 1, v - sumBefore(sm, k)));
+  const b = Math.max(txt.lastIndexOf('. ', at), txt.lastIndexOf('? ', at), txt.lastIndexOf('! ', at)); at = b > 0 ? b + 2 : 0;
+  const was = speaking;
+  if (go && was) { speaking = false; utt = null; if (synth) synth.cancel(); }
+  sumK = k; sumChar = at; saveSum(); showPara();
+  if (go && was) speakPara(k, at);
+}
+// While reading, move the slider along (estimated from the voice's word events or the time spoken).
+setInterval(() => {
+  if (!inSum || !speaking || scrubbing) return; const sm = sumOf(Q[i]); if (!sm) return;
+  const est = sawBoundary ? sumChar : spokeFrom + Math.round((Date.now() - spokeAt) / 1000 * 14 * vrate);
+  $('seek').value = sumBefore(sm, sumK) + Math.min(sm[sumK][1].length, est);
+}, 1000);
 function notePlace(){
   if (!speaking || !inSum) return;
   const sm = sumOf(Q[i]); if (!sm) return; const txt = sm[sumK][1];
