@@ -173,8 +173,8 @@ function mark(){
 }
 function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
 // Summaries have their own reading speed (0.5x to 2x). A change picks up from the last word spoken, not the paragraph start.
-let vrate = +ls.get('pp-vrate', 0.9) || 0.9, sumChar = 0;
-function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 10; ls.set('pp-vrate', vrate); mark(); if (inSum && speaking) speakPara(sumK, sumChar); }
+let vrate = +ls.get('pp-vrate', 0.9) || 0.9, sumChar = 0, sawBoundary = false, spokeAt = 0, spokeFrom = 0;
+function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 10; ls.set('pp-vrate', vrate); mark(); if (inSum && speaking) { notePlace(); speakPara(sumK, sumChar); } }
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
@@ -236,7 +236,7 @@ $('fn').onclick = finishNext;
 $('prev').onclick = () => { if (i > 0) { load(i - 1, true); return; } const q = Q[i]; if (q && sumOf(q)) { sumMode[q.id] = 0; ls.set('pp-sum', sumMode); } load(i, true, 0); };  // on the first item, start it over
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
 $('back').onclick = () => inSum ? jumpPara(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-150); $('fwd').onclick = () => inSum ? jumpPara(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(150);
-$('seek').oninput = e => { if (inSum) { sumK = +e.target.value; saveSum(); showPara(); if (speaking) speakPara(sumK); return; } au.currentTime = +e.target.value; };
+$('seek').oninput = e => { if (inSum) { sumChar = 0; sumK = +e.target.value; saveSum(); showPara(); if (speaking) speakPara(sumK); return; } au.currentTime = +e.target.value; };
 au.onplay = () => { au.playbackRate = rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
 au.onplaying = () => { clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
 au.onpause = () => { $('play').textContent = '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
@@ -321,7 +321,7 @@ function showPara(){
 function enterSum(go){
   const q = Q[i]; inSum = true; wantPlay = false; lastGood = 0; startAt = 0; pastEnd = 0; clearTimeout(retryTimer); clearTimeout(kickTimer);
   au.pause(); au.removeAttribute('src'); au.load();
-  const saved = sumMode[q.id]; sumK = typeof saved === 'number' ? saved : 0;
+  const saved = sumMode[q.id]; sumK = typeof saved === 'number' ? saved : 0; sumChar = 0;
   $('drive').classList.add('sum'); $('sumbox').hidden = false; labels(true);
   $('t').textContent = q.t; $('s').textContent = 'Summary · ' + sub(q, i);
   if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: 'Summary · ' + q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
@@ -334,7 +334,8 @@ function speakPara(k, from){
   synth.cancel();
   const off = from > 0 && from < sm[sumK][1].length ? from : 0; sumChar = off;
   const u = new SpeechSynthesisUtterance(sm[sumK][1].slice(off)); utt = u;
-  u.onboundary = e => { if (utt === u && e.name !== 'sentence') sumChar = off + (e.charIndex || 0); };
+  sawBoundary = false; spokeAt = Date.now(); spokeFrom = off;
+  u.onboundary = e => { if (utt === u && e.name !== 'sentence') { sawBoundary = true; sumChar = off + (e.charIndex || 0); } };
   const vo = voice(); if (vo) { u.voice = vo; u.lang = vo.lang; } else u.lang = 'en-US';
   u.rate = vrate;
   u.onend = () => { if (utt !== u || !inSum || !speaking) return; if (sumK < sm.length - 1) speakPara(sumK + 1); else sumDone(); };
@@ -344,10 +345,20 @@ function speakPara(k, from){
   sil.play().catch(() => {});
   if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
 }
-function resumeSum(){ if (!inSum) return; $('st').textContent = ''; speakPara(sumK); }
-function pauseSum(){ speaking = false; utt = null; if (synth) synth.cancel(); sil.pause(); $('play').textContent = '▶'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} }
+function resumeSum(){ if (!inSum) return; $('st').textContent = ''; speakPara(sumK, sumChar); }
+// Where the voice is in the paragraph: from its word events, or (if this phone's voice sends none) estimated from
+// the time spoken, then moved back to the start of that sentence so nothing is skipped.
+function notePlace(){
+  if (!speaking || !inSum) return;
+  const sm = sumOf(Q[i]); if (!sm) return; const txt = sm[sumK][1];
+  let at = sawBoundary ? sumChar : spokeFrom + Math.round((Date.now() - spokeAt) / 1000 * 14 * vrate);
+  at = Math.max(0, Math.min(txt.length - 1, at));
+  if (!sawBoundary) { const b = Math.max(txt.lastIndexOf('. ', at), txt.lastIndexOf('? ', at), txt.lastIndexOf('! ', at)); at = b > 0 ? b + 2 : 0; }
+  sumChar = at;
+}
+function pauseSum(){ notePlace(); speaking = false; utt = null; if (synth) synth.cancel(); sil.pause(); $('play').textContent = '▶'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} }
 function stopSum(){ if (inSum || speaking) pauseSum(); inSum = false; }
-function jumpPara(d){ const sm = sumOf(Q[i]); if (!sm) return; sumK = Math.max(0, Math.min(sm.length - 1, sumK + d)); saveSum(); showPara(); if (speaking) speakPara(sumK); }
+function jumpPara(d){ const sm = sumOf(Q[i]); if (!sm) return; sumChar = 0; sumK = Math.max(0, Math.min(sm.length - 1, sumK + d)); saveSum(); showPara(); if (speaking) speakPara(sumK); }
 function sumDone(){
   pauseSum(); heard();
   let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
