@@ -78,6 +78,44 @@ def prep(D):
         at = pdate(v.get('at'))
         if v.get('s') == 'later' and at and (NOW - at).days < 2:
             asked.add(iid)   # tapped "Audio summary" in the queue: summarize whatever its source or age
+    # "Summarize instead" in the player: rows "s-<id>" in the player's drop-box sheet (saved by the task as
+    # DIR/loop.json). Those count as asked too, and their state is set to 'later' so the queue shows them under
+    # Audio summaries in Playlist (never To Sort). Rows older than 2 days are ignored.
+    sreq, swrites = set(), []
+    lj = load(f'{D}/loop.json', {}) or {}
+    rows = lj.get('values', []) if isinstance(lj, dict) else (lj if isinstance(lj, list) else [])
+    for row in rows:
+        cells = [str(c or '').strip() for c in (row or [])]
+        ids = [c[2:] for c in cells if re.match(r'^s-[py]-[A-Za-z0-9_-]{6,}$', c)]
+        if not ids:
+            continue
+        when = None
+        for c in cells:
+            for fmt in ('%m/%d/%Y %H:%M:%S', '%Y-%m-%d %H:%M:%S'):
+                try:
+                    when = dt.datetime.strptime(c, fmt).replace(tzinfo=dt.timezone.utc)
+                    break
+                except Exception:
+                    pass
+            if when:
+                break
+        if when and (NOW - when).total_seconds() > 2 * 86400 + 86400:   # +1 day slack for the sheet's own time zone
+            continue
+        sreq.update(ids)
+    for iid in sorted(sreq):
+        if st.get(iid) in DONE or iid in have:
+            continue
+        asked.add(iid)
+        if st.get(iid) != 'later':
+            sp = f'{D}/state/{iid}.json'
+            rv = json.load(open(sp)) if os.path.exists(sp) else None
+            w = {'op': 'set', 'collection': 'state', 'doc_id': iid, 'data': {'s': 'later', 'at': NOW.strftime('%Y-%m-%dT%H:%M:%S.000Z')}}
+            if isinstance(rv, dict) and rv.get('version'):
+                w['if_version'] = rv['version']
+            swrites.append(w)
+    json.dump(swrites, open(f'{D}/sbatch.json', 'w'))
+    if swrites:
+        print(f'player asked for {len(swrites)} summaries; state batch: {D}/sbatch.json')
     need = []
     for k in ('podcasts', 'daily', 'wl'):
         for it in (load(f'{D}/feed/{k}.json', {}) or {}).get('items', []):
@@ -377,7 +415,31 @@ def publish(D, repo):
     for p in glob.glob(f'{dst}/*.mp3'):
         if os.path.basename(p)[:-4] not in keep:
             os.remove(p); gone += 1
-    print(f'copied {n}, removed {gone} old')
+    # Next to each audio file, a small a/<id>.json {sm, sa, ss} lets the player turn an episode it asked to have
+    # summarized ("Summarize instead") into its summary without a new Play all. Recent failures get {err}.
+    docs = {}
+    for path in glob.glob(f'{D}/deep/*.json'):
+        raw = json.load(open(path))
+        docs[os.path.basename(path)[:-5]] = dict(raw.get('data', raw) if isinstance(raw, dict) else {})
+    for bf in glob.glob(f'{D}/batch_*.json') + glob.glob(f'{D}/abatch_*.json'):
+        for w in json.load(open(bf)):
+            docs.setdefault(w['doc_id'], {}).update(w.get('data') or {})
+    js = 0
+    for iid, doc in docs.items():
+        out, at = None, pdate(doc.get('at'))
+        if doc.get('p') and doc.get('sa') and os.path.exists(f'{dst}/{iid}.mp3'):
+            out = {'sm': doc['p'], 'sa': doc['sa'], 'ss': doc.get('ss') or []}
+        elif doc.get('err') and not doc.get('p') and at and (NOW - at).days < 3:
+            out = {'err': str(doc['err'])[:200]}
+        if out is not None:
+            new = json.dumps(out, separators=(',', ':'))
+            jp = f'{dst}/{iid}.json'
+            if not os.path.exists(jp) or open(jp).read() != new:
+                open(jp, 'w').write(new); js += 1
+    for p in glob.glob(f'{dst}/*.json'):
+        if os.path.basename(p)[:-5] not in docs:
+            os.remove(p); gone += 1
+    print(f'copied {n}, wrote {js} summary files, removed {gone} old')
 
 
 if __name__ == '__main__':

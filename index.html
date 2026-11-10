@@ -31,6 +31,8 @@ button:active{filter:brightness(.85);transform:scale(.97)}
 .st{text-align:center;font-size:14px;font-weight:600;color:var(--ok);min-height:20px}
 .cp{width:100%;min-height:64px;font-size:21px}.cp.ok{background:var(--ac);color:var(--on)}
 .fn{width:100%;min-height:72px;font-size:23px;color:var(--ok);box-shadow:inset 0 0 0 2px var(--ok)}
+.sr{width:100%;min-height:56px;font-size:18px;color:var(--ac);box-shadow:inset 0 0 0 2px var(--ac)}
+.sr:disabled{opacity:.6}
 .st.err{color:#b23a24}
 .hint{text-align:center;color:var(--mu);font-size:13px;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
 ol{list-style:none;margin:0 auto;padding:0 12px 28px;max-width:720px}
@@ -72,6 +74,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
   </div>
   <div class="st" id="st" aria-live="polite"></div>
   <button id="fn" class="fn">✓ Finished · next episode</button>
+  <button id="sr" class="sr" hidden>📝 Summarize instead · next episode</button>
   <div id="cp" class="hint" hidden></div>
   <div class="hint" id="hint">Scroll down for the episode list; use ↑ ↓ there to change the order. Tap ▶ Play all in your queue to load a fresh list.</div>
 </div>
@@ -171,6 +174,7 @@ function mark(){
   const q = Q[i]; $('st').textContent = q && H.has(q.id) ? '✓ Finished' : '';
   const ob = ls.get('pp-outbox', []), cfg = loop();
   $('cp').hidden = !(cfg && ob.length); $('cp').textContent = ob.length + ' finished, waiting to sync to your queue';
+  if (typeof srBtn === 'function') try { srBtn(); } catch (e) {}
 }
 function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
 // Summaries have their own reading speed (0.5x to 2x). A change picks up from the last word spoken, not the paragraph start.
@@ -429,6 +433,57 @@ function watchOrig(){
   WO.add(q.id); ls.set('pp-wo', [...WO].slice(-300)); outboxAdd('w-' + q.id); showPara();
 }
 $('wo').onclick = watchOrig;
+// Summarize instead: sends "s-<id>" through the drop box. The queue's hourly summary task picks it up, and once the
+// audio publisher has put a/<id>.json on this site the episode comes back here as a summary, next in line.
+const SR = ls.get('pp-sreq', {});
+for (const k of Object.keys(SR)) if (Date.now() - SR[k] > 3 * 864e5) delete SR[k];
+ls.set('pp-sreq', SR);
+function srBtn(){
+  const q = Q[i], b = $('sr');
+  b.hidden = !(q && q.id && q.a && !sumOf(q) && loop());
+  if (b.hidden) return;
+  b.disabled = !!SR[q.id];
+  b.textContent = SR[q.id] ? '⏳ Summary requested · it will come back here' : '📝 Summarize instead · next episode';
+}
+function askSummary(){
+  const q = Q[i]; if (!q || !q.id || !q.a || SR[q.id] || !loop()) return;
+  savePos(); SR[q.id] = Date.now(); ls.set('pp-sreq', SR); outboxAdd('s-' + q.id);
+  let k = i + 1; while (k < Q.length && (H.has(Q[k].id) || SR[Q[k].id])) k++;
+  renderList();
+  if (k < Q.length) { load(k, true); window.scrollTo(0, 0); }
+  else { wantPlay = false; au.pause(); srBtn(); $('st').textContent = 'Summary requested. Nothing else left in this list.'; }
+}
+$('sr').onclick = askSummary;
+let srBusy = false;
+async function pollSummaries(){
+  const ids = Object.keys(SR).filter(id => Q.some(q => q.id === id && !sumOf(q)));
+  if (srBusy || !ids.length || !navigator.onLine) return;
+  srBusy = true;
+  try {
+    for (const id of ids) {
+      let j = null;
+      try { const r = await fetch('a/' + encodeURIComponent(id) + '.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch (e) {}
+      if (!j) continue;
+      const k = Q.findIndex(q => q.id === id); if (k < 0) continue;
+      const q = Q[k]; delete SR[id]; ls.set('pp-sreq', SR);
+      if (j.err || !Array.isArray(j.sm) || !j.sm.length) { renderList(); $('st').textContent = 'Could not summarize “' + q.t + '”.'; continue; }
+      q.sm = j.sm; q.sa = j.sa || ''; q.ss = Array.isArray(j.ss) ? j.ss : null;
+      delete sumMode[id]; ls.set('pp-sum', sumMode); delete P['S:' + id]; ls.set('pp-posmap', P);
+      if (k !== i) {   // put it right after what is playing now
+        const cur = Q[i] && Q[i].id; Q.splice(k, 1); const c = Math.max(0, Q.findIndex(x => x.id === cur));
+        Q.splice(Math.min(Q.length, c + 1), 0, q); i = Math.max(0, Q.findIndex(x => x.id === cur));
+        ls.set('pp-order', { ids: Q.map(x => x.id), at: Date.now() });
+      }
+      ls.set('pp-queue', Q); renderList();
+      if (Q[i]) $('s').textContent = (inSum || inSA ? 'Summary · ' : '') + sub(Q[i], i);
+      $('st').textContent = 'Summary ready, up next: ' + q.t;
+      if (k === i && au.paused && !inSum) load(i, false);
+    }
+  } finally { srBusy = false; srBtn(); }
+}
+setInterval(() => { if (!document.hidden || wantPlay) pollSummaries(); }, 180e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pollSummaries(); });
+setTimeout(pollSummaries, 3000);
 $('sumhd').onclick = () => { sumOpen = !sumOpen; ls.set('pp-sumopen', sumOpen); showPara(); };
 $('full').onclick = () => toEpisode(false);
 $('here').onclick = () => toEpisode(true);
@@ -450,6 +505,7 @@ function renderList(){
     const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (rel(q) ? ' · ' + rel(q) : '') + (q.d ? ' · ' + f(q.d) : '');
     box.append(a, b);
     if (q.sm && !H.has(q.id) && sumMode[q.id] !== 'ep') { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '\ud83d\udd0a summary'; b.appendChild(tg); }
+    else if (SR[q.id]) { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '\u23f3 summary coming'; b.appendChild(tg); }
     const up = document.createElement('button'); up.className = 'mv'; up.textContent = '↑'; up.setAttribute('aria-label', 'Move up'); up.disabled = k === 0;
     const dn = document.createElement('button'); dn.className = 'mv'; dn.textContent = '↓'; dn.setAttribute('aria-label', 'Move down'); dn.disabled = k === Q.length - 1;
     up.onclick = e => { e.stopPropagation(); move(k, -1); }; dn.onclick = e => { e.stopPropagation(); move(k, 1); };
