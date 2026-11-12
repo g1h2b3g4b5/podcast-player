@@ -99,15 +99,18 @@ def info(vid):
 
 
 def download(vid):
+    # Files in this folder cannot be deleted, only emptied, so every download gets a fresh name
+    # (yt-dlp refuses to overwrite) and is emptied after use.
     os.makedirs(WORK, exist_ok=True)
-    for f in glob.glob(os.path.join(WORK, 'audio.*')):
+    for f in glob.glob(os.path.join(WORK, 'audio-*')):
         truncate(f)
-    r = run(['yt-dlp', '-f', 'bestaudio[ext=m4a]/bestaudio/best', '--no-playlist', '--no-warnings', '--force-overwrites',
-             '-o', os.path.join(WORK, 'audio.%(ext)s'), f'https://www.youtube.com/watch?v={vid}'], timeout=900)
-    files = [f for f in glob.glob(os.path.join(WORK, 'audio.*')) if os.path.getsize(f) > 1000]
+    stem = os.path.join(WORK, f'audio-{vid}-{int(time.time())}')
+    r = run(['yt-dlp', '-f', 'bestaudio[ext=m4a]/bestaudio/best', '--no-playlist', '--no-warnings',
+             '-o', stem + '.%(ext)s', f'https://www.youtube.com/watch?v={vid}'], timeout=900)
+    files = [f for f in glob.glob(stem + '.*') if os.path.getsize(f) > 1000]
     if r.returncode != 0 or not files:
-        msg = (r.stderr or '').strip().splitlines()
-        return None, ('download failed: ' + (msg[-1] if msg else 'unknown'))[:160]
+        msg = [l for l in (r.stderr or '').strip().splitlines() if l.startswith('ERROR')]
+        return None, ('download failed: ' + re.sub(r'^ERROR:\s*(\[\w+\]\s*)?', '', msg[-1] if msg else 'unknown'))[:160]
     return files[0], None
 
 
@@ -170,16 +173,14 @@ def whisper(vid, jobdir, budget):
         if over(budget):
             return 'later', None
         if audio is None:
-            cur = [f for f in glob.glob(os.path.join(WORK, 'audio.*')) if os.path.getsize(f) > 1000]
-            marker = os.path.join(WORK, 'audio.id')
-            if cur and os.path.exists(marker) and open(marker).read().strip() == vid:
+            cur = [f for f in glob.glob(os.path.join(WORK, f'audio-{vid}-*')) if os.path.getsize(f) > 1000]
+            if cur:
                 audio = cur[0]
             else:
                 log(f'  downloading audio')
                 audio, err = download(vid)
                 if err:
                     return 'err', err
-                open(marker, 'w').write(vid)
                 if not st['dur']:
                     st['dur'] = duration(audio)
                     json.dump(st, open(state_p, 'w'))
@@ -188,7 +189,7 @@ def whisper(vid, jobdir, budget):
         st['rows'] += transcribe_piece(audio, start, PIECE)
         st['done'] += 1
         json.dump(st, open(state_p, 'w'))
-    for f in glob.glob(os.path.join(WORK, 'audio.*')):
+    for f in glob.glob(os.path.join(WORK, 'audio-*')):
         truncate(f)
     rows = st['rows']
     if len(' '.join(r[1] for r in rows)) < 200:
@@ -215,7 +216,7 @@ def main():
         if over(budget):
             break
         log(f'{vid}:')
-        segs = captions(vid)
+        segs = None if os.environ.get('LQTX_FORCE_WHISPER') else captions(vid)
         if segs:
             res = {'segs': segs, 'src': 'captions'}
             log(f'  captions: {len(segs)} lines')
