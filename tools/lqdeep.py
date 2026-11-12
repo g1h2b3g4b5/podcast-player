@@ -19,6 +19,13 @@ DIR/config/deep.json, DIR/state/*.json, DIR/deep/*.json), then:
   python3 -I lqdeep.py finalize DIR
       Reads DIR/sum/<id>.json (a JSON array of paragraph strings, one per part) and prints the
       ArtifactData batch files to send: DIR/batch_<n>.json. Items whose transcript failed get {err}.
+
+Segmented shows (DIR/config/seg.json: podcasts switched to "Segments on" in the queue's Auto-sort tab): prep also
+picks their new episodes (last 2 days). chunks writes those transcripts one line per few seconds with its time, and
+the summarizer returns {"segments": [{start, end, title, paragraphs}]}: the stretches of the show between ad
+breaks, each with its own summary.  python3 -I lqdeep.py segcheck DIR ID  says whether that answer is usable.
+finalize stores them as deep/<id> = {p: [[startSecs, text], ...], sg: [[startSecs, endSecs, firstParagraph, title], ...]}
+so the player can switch between the original and the summary segment by segment.
 """
 import datetime as dt, glob, json, os, re, subprocess, sys, time, urllib.request
 
@@ -26,6 +33,8 @@ NOW = dt.datetime.now(dt.timezone.utc)
 ISO = lambda d: d.strftime('%Y-%m-%dT%H:%M:%SZ')
 PART = 420          # seconds of episode per summary paragraph (7 minutes; between the 5 and 10 asked for)
 MAXDAYS = 7
+SEGDAYS = 2        # segmented shows: only episodes released in the last 2 days are picked automatically
+MINSEG = 20        # a segment shorter than this many seconds is dropped
 SHORT = 300        # 5 minutes or less: one short paragraph of about three sentences
 DONE = {'done', 'fin', 'listened', 'removed'}
 
@@ -57,6 +66,8 @@ def log(D, msg):
 def prep(D):
     keys = (load(f'{D}/config/deep.json', {}) or {}).get('keys', {}) or {}
     on = set(keys)
+    segkeys = (load(f'{D}/config/seg.json', {}) or {}).get('keys', {}) or {}
+    segon = {k for k, v in segkeys.items() if isinstance(v, dict) and v.get('on')}
     have, retry = set(), {}
     for p in glob.glob(f'{D}/deep/*.json'):
         iid = os.path.basename(p)[:-5]
@@ -121,12 +132,15 @@ def prep(D):
         for it in (load(f'{D}/feed/{k}.json', {}) or {}).get('items', []):
             if it['id'] in have or st.get(it['id']) in DONE:
                 continue
+            pub = pdate(it.get('pub'))
+            # Segmented show: its episodes are split at the ad breaks, each segment with its own summary.
+            isseg = k == 'podcasts' and bool(it.get('audio')) and norm(it.get('ch')) in segon
             if it['id'] not in asked and it['id'] not in retry:
-                if norm(it.get('ch')) not in on:
-                    continue
-                pub = pdate(it.get('pub'))
-                if pub and (NOW - pub).days > MAXDAYS:
-                    continue
+                if not (isseg and pub and (NOW - pub).total_seconds() <= SEGDAYS * 86400):
+                    if norm(it.get('ch')) not in on:
+                        continue
+                    if pub and (NOW - pub).days > MAXDAYS:
+                        continue
             if it.get('vid'):
                 need.append({'id': it['id'], 'kind': 'yt', 'vid': it['vid'], 'title': it.get('title', ''), 'ch': it.get('ch', ''), 'dur': it.get('dur', 0)})
             elif it.get('audio'):
@@ -135,12 +149,15 @@ def prep(D):
                 need.append({'id': it['id'], 'kind': 'none', 'title': it.get('title', ''), 'ch': it.get('ch', ''), 'dur': it.get('dur', 0)})
             if it['id'] in retry:
                 need[-1]['retry'] = retry[it['id']]
+            if isseg and need[-1]['kind'] == 'audio':
+                need[-1]['seg'] = True
     json.dump(need, open(f'{D}/need.json', 'w'), indent=1)
     vids = [n['vid'] for n in need if n['kind'] == 'yt']
     open(f'{D}/tx_start.js', 'w').write('window.__runTx(%s)' % json.dumps(vids))
     hrs = sum(float(n['dur'] or 0) for n in need if n['kind'] == 'audio') / 3600
     pods = sum(1 for n in need if n['kind'] == 'audio')
     nolink = sum(1 for n in need if n['kind'] == 'none')
+    print(f"segmented shows on: {len(segon)} ({sum(1 for n in need if n.get('seg'))} episodes to split into segments)")
     print(f"sources on: {len(on)} | asked for: {len(asked)} | retries: {sum(1 for n in need if n.get('retry'))} | to summarize: {len(need)} ({pods} podcast episodes, about {hrs:.1f} h of audio; {len(vids)} videos; {nolink} with no audio link, marked failed)")
 
 
@@ -183,6 +200,7 @@ def audio(D):
                 if not rows:
                     raise RuntimeError('no speech found')
                 json.dump(rows, open(out, 'w'))
+                open(f"{D}/tx/{n['id']}.dur", 'w').write(str(round(info.duration or 0, 1)))
                 log(D, f"done {n['id']} ({info.duration / 60:.0f} min audio in {(time.time() - t0) / 60:.1f} min)")
             except Exception as e:
                 open(f"{D}/tx/{n['id']}.err", 'w').write(str(e)[:200])
@@ -237,6 +255,80 @@ def fmt(t):
     return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
 
 
+def tsec(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().strip('[]')
+    if not re.fullmatch(r'\d+(:\d{1,2}){0,2}(\.\d+)?', s):
+        raise ValueError(f'bad time {v!r}')
+    out = 0.0
+    for part in s.split(':'):
+        out = out * 60 + float(part)
+    return out
+
+
+def seg_len(D, iid, rows, n):
+    """Length of the episode in seconds: the audio's own length when known, else the last transcript line."""
+    last = max((r[0] for r in rows), default=0)
+    try:
+        real = float(open(f'{D}/tx/{iid}.dur').read())
+    except Exception:
+        real = 0
+    return max(real, last + 5) if real else max(float(n.get('dur') or 0), last + 5)
+
+
+def read_seg(D, iid, n):
+    """Reads the summarizer's answer for a segmented episode. Returns [(start, end, title, [paragraphs]), ...],
+    cleaned so segments are in order, inside the episode and never overlap. Raises ValueError when unusable."""
+    rows = json.load(open(f'{D}/tx/{iid}.json'))
+    total = seg_len(D, iid, rows, n)
+    last = max((r[0] for r in rows), default=0)
+    obj = json.load(open(f'{D}/sum/{iid}.json'))
+    raw = obj.get('segments') if isinstance(obj, dict) else obj
+    if not isinstance(raw, list) or not raw or not all(isinstance(x, dict) for x in raw):
+        raise ValueError('no "segments" list')
+    segs = []
+    for x in raw:
+        paras = x.get('paragraphs', x.get('summary'))
+        paras = [paras] if isinstance(paras, str) else (paras or [])
+        paras = [str(q).strip() for q in paras if str(q).strip()]
+        if not paras:
+            continue
+        st, en = tsec(x.get('start')), tsec(x.get('end'))
+        segs.append([st, en, re.sub(r'\s+', ' ', str(x.get('title') or '')).strip()[:60], paras])
+    segs.sort(key=lambda q: q[0])
+    out, prev = [], 0.0
+    for st, en, title, paras in segs:
+        st = max(st, prev)
+        if en >= last - 1:          # the last content line: run to the end of the audio
+            en = total
+        en = min(en, total)
+        if en - st < MINSEG:
+            continue
+        out.append((round(st, 1), round(en, 1), title or f'Segment {len(out) + 1}', paras))
+        prev = en
+    if not out:
+        raise ValueError('no usable segments')
+    covered = sum(en - st for st, en, _, _ in out)
+    if covered < 0.3 * total:
+        raise ValueError(f'segments cover only {covered / 60:.0f} of {total / 60:.0f} minutes')
+    return out
+
+
+def segcheck(D, iid):
+    need = {n['id']: n for n in json.load(open(f'{D}/need.json'))}
+    try:
+        segs = read_seg(D, iid, need.get(iid, {}))
+        bad = [w for w in ('sponsor', 'advertis', 'promo', 'brought to you by', 'discount code')
+               if any(w in q.lower() for _, _, t, ps in segs for q in ps + [t])]
+        if bad:
+            print(f'BAD: the summaries mention ads ({", ".join(bad)})')
+            return
+        print(f'OK: {len(segs)} segments, ' + ', '.join(f'{fmt(st)}-{fmt(en)}' for st, en, _, _ in segs))
+    except Exception as e:
+        print(f'BAD: {str(e)[:200]}')
+
+
 def chunks(D):
     os.makedirs(f'{D}/chunks', exist_ok=True)
     need = {n['id']: n for n in json.load(open(f'{D}/need.json'))}
@@ -248,6 +340,13 @@ def chunks(D):
             continue
         rows = json.load(open(p))
         end = max((r[0] for r in rows), default=0)
+        if n.get('seg'):
+            body = [f"TITLE: {n['title']}\nSOURCE: {n['ch']}\nLENGTH: {fmt(seg_len(D, iid, rows, n))}\n"]
+            body += [f'[{fmt(t)}] {x}' for t, x in rows]
+            open(f'{D}/chunks/{iid}.txt', 'w').write('\n'.join(body))
+            jobs.append({'id': iid, 'seg': True, 'file': f'{D}/chunks/{iid}.txt', 'out': f'{D}/sum/{iid}.json',
+                         'chars': sum(len(x) for _, x in rows), 'minutes': round(end / 60)})
+            continue
         k = max(1, round(max(end, n.get('dur') or 0) / PART))
         size = max(end, 1) / k
         parts = [[] for _ in range(k)]
@@ -263,7 +362,7 @@ def chunks(D):
         jobs.append({'id': iid, 'parts': len(parts), 'file': f'{D}/chunks/{iid}.txt', 'out': f'{D}/sum/{iid}.json', 'chars': sum(len(x) for _, x in rows), 'short': max(end, n.get('dur') or 0) <= SHORT})
     os.makedirs(f'{D}/sum', exist_ok=True)
     json.dump(jobs, open(f'{D}/jobs.json', 'w'), indent=1)
-    print(f'{len(jobs)} transcripts ready to summarize:', ', '.join(f"{j['id']} ({j['parts']} parts)" for j in jobs))
+    print(f'{len(jobs)} transcripts ready to summarize:', ', '.join(f"{j['id']} (segments)" if j.get('seg') else f"{j['id']} ({j['parts']} parts)" for j in jobs))
 
 
 def finalize(D):
@@ -274,7 +373,33 @@ def finalize(D):
         iid = n['id']
         sp, stp = f'{D}/sum/{iid}.json', f'{D}/chunks/{iid}.starts'
         doc = None
-        if os.path.exists(sp) and os.path.exists(stp):
+        if n.get('seg') and os.path.exists(sp):
+            try:
+                p, sg = [], []
+                for st, en, title, paras in read_seg(D, iid, n):
+                    sg.append([st, en, len(p), title])
+                    p += [[round(st + (en - st) * j / len(paras)), x] for j, x in enumerate(paras)]
+                doc = {'p': p, 'sg': sg, 'at': now, 'src': n['kind'], 'dur': n.get('dur') or 0}
+                okn += 1
+            except Exception as e:
+                # Segments unusable: keep whatever paragraphs there are as an ordinary summary.
+                try:
+                    obj = json.load(open(sp))
+                    raw = obj.get('segments') if isinstance(obj, dict) else obj
+                    paras = []
+                    for x in raw or []:
+                        q = x.get('paragraphs', x.get('summary')) if isinstance(x, dict) else x
+                        paras += [q] if isinstance(q, str) else list(q or [])
+                    paras = [str(x).strip() for x in paras if str(x).strip()]
+                    rows = json.load(open(f'{D}/tx/{iid}.json'))
+                    end = max((r[0] for r in rows), default=0)
+                    if paras:
+                        doc = {'p': [[round(end * j / len(paras)), x] for j, x in enumerate(paras)], 'at': now, 'src': n['kind'], 'dur': n.get('dur') or 0}
+                        okn += 1
+                except Exception:
+                    pass
+                errs.append(f'{iid}: segments unusable ({str(e)[:80]}), ' + ('saved as a plain summary' if doc else 'no summary'))
+        elif os.path.exists(sp) and os.path.exists(stp):
             try:
                 paras = json.load(open(sp))
                 if isinstance(paras, dict):
@@ -435,6 +560,8 @@ def publish(D, repo):
         out, at = None, pdate(doc.get('at'))
         if doc.get('p') and doc.get('sa') and os.path.exists(f'{dst}/{iid}.mp3'):
             out = {'sm': doc['p'], 'sa': doc['sa'], 'ss': doc.get('ss') or []}
+            if doc.get('sg'):
+                out['sg'] = doc['sg']
         elif doc.get('err') and not doc.get('p') and at and (NOW - at).days < 3:
             out = {'err': str(doc['err'])[:200]}
         if out is not None:
@@ -451,5 +578,5 @@ def publish(D, repo):
 if __name__ == '__main__':
     cmd, D = sys.argv[1], sys.argv[2].rstrip('/')
     {'prep': lambda: prep(D), 'audio': lambda: audio(D), 'yt': lambda: yt(D, sys.argv[3]),
-     'chunks': lambda: chunks(D), 'finalize': lambda: finalize(D),
+     'chunks': lambda: chunks(D), 'finalize': lambda: finalize(D), 'segcheck': lambda: segcheck(D, sys.argv[3]),
      'speak': lambda: speak(D), 'publish': lambda: publish(D, sys.argv[3])}[cmd]()

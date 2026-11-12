@@ -52,6 +52,21 @@ li.fin .lt span{text-decoration:line-through;color:var(--mu)}li.fin .lt span::be
 .drive.sum .grid{min-height:300px;grid-template-rows:1.3fr 1fr 1fr 1fr}.drive.sum #b150,.drive.sum #f150{display:none}
 .drive.sum #back,.drive.sum #fwd,.drive.sum #b150,.drive.sum #f150{font-size:24px}
 li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);margin-left:4px}
+.segbox{background:var(--bt);border-radius:18px;padding:12px 14px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.seghd{font-size:15px;font-weight:700;color:var(--ac);margin-bottom:10px;overflow-wrap:anywhere}
+.seghd small{display:block;font-weight:500;color:var(--mu);font-size:14px;margin-top:2px}
+.sgt{width:100%;min-height:64px;font-size:20px;border-radius:14px;background:var(--bg);box-shadow:inset 0 0 0 2px var(--ac);color:var(--ac)}
+.segl{background:var(--bt);border-radius:18px;padding:10px 14px 6px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.seglh{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mu);padding-bottom:6px}
+.seglh span{flex:1}
+.seglh button{font-size:14px;font-weight:600;letter-spacing:0;text-transform:none;min-height:40px;padding:0 12px;border-radius:12px;background:var(--bg);box-shadow:inset 0 0 0 1px var(--ln)}
+.sgr{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--ln)}
+.sgn{flex:1;min-width:0;font-size:16px;cursor:pointer;overflow-wrap:anywhere}
+.sgn small{display:block;color:var(--mu);font-size:13px;font-weight:400}
+.sgr.cur .sgn{color:var(--ac);font-weight:700}
+.sgv{flex:0 0 auto;min-width:108px;min-height:46px;font-size:15px;border-radius:12px;background:var(--bg);box-shadow:inset 0 0 0 1px var(--ln)}
+.sgv.s{color:var(--ac);box-shadow:inset 0 0 0 2px var(--ac)}
+.drive.seg #b150,.drive.seg #f150{font-size:22px}
 .empty{margin:auto;text-align:center;color:var(--mu);max-width:32ch;font-size:15px}
 </style>
 </head>
@@ -65,6 +80,10 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
     <div class="sumtx" id="sumtx" hidden></div>
     <div class="sumbar"><button id="full">▶ Full episode</button><button id="here" class="one">Play from here</button><button id="wo" class="one" hidden>＋ Add original to Daily news</button></div>
   </div>
+  <div class="segbox" id="segbox" hidden>
+    <div class="seghd" id="seghd"></div>
+    <button id="sgt" class="sgt" type="button"></button>
+  </div>
   <div class="grid">
     <button id="play" aria-label="Play or pause">▶</button>
     <button id="back">−30s</button><button id="fwd">+30s</button>
@@ -76,6 +95,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
   <button id="fn" class="fn">✓ Finished · next episode</button>
   <button id="sr" class="sr" hidden>📝 Summarize instead · next episode</button>
   <div id="cp" class="hint" hidden></div>
+  <div class="segl" id="segl" hidden></div>
   <div class="hint" id="hint">Scroll down for the episode list; use ↑ ↓ there to change the order. Tap ▶ Play all in your queue to load a fresh list.</div>
 </div>
 <ol id="list"></ol>
@@ -88,7 +108,10 @@ const ls = { get(k, d){ try { const v = localStorage.getItem(k); return v == nul
              set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
 let hashOrderAt = 0;
 const unb64 = t => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-const toItems = arr => arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '', v: x[6] || '', sm: Array.isArray(x[7]) && x[7].length ? x[7] : null, sa: Array.isArray(x[8]) ? x[8][0] || '' : '', ss: Array.isArray(x[8]) && Array.isArray(x[8][1]) ? x[8][1] : null })).filter(x => x.a || x.sm);
+const toItems = arr => arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '', v: x[6] || '', sm: Array.isArray(x[7]) && x[7].length ? x[7] : null, sa: Array.isArray(x[8]) ? x[8][0] || '' : '', ss: Array.isArray(x[8]) && Array.isArray(x[8][1]) ? x[8][1] : null,
+  // Segmented episode: sg = [[startSecs, endSecs, firstSummaryParagraph, title], ...], gd = what each segment starts as
+  // ('o' original, 's' summary), gf = 1 when the first segment always starts as the original.
+  sg: Array.isArray(x[9]) && Array.isArray(x[9][0]) && x[9][0].length ? x[9][0] : null, gd: Array.isArray(x[9]) && x[9][1] === 's' ? 's' : 'o', gf: Array.isArray(x[9]) && x[9][2] ? 1 : 0 })).filter(x => x.a || x.sm);
 // Lists with read-aloud summaries arrive deflated (#z=); unpack them into the plain form before the page starts.
 const zm = location.hash.match(/[#&]z=([A-Za-z0-9_-]+)/);
 let zItems = null;
@@ -119,6 +142,8 @@ else Q = ls.get('pp-queue', []);
 let pastEnd = 0, rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard', [])), i = 0, startAt = 0, lastSave = 0, lastGood = 0, tries = 0, wantPlay = false, retryTimer = null;
 // Every episode remembers its own place, so skipping around never loses where you were in any of them.
 let P = ls.get('pp-posmap', {});
+const SG = ls.get('pp-seg', {});   // id -> { k: segment playing, m: {seg: 'o'|'s'}, o: {seg: place in original}, s: {seg: place in summary} }
+let inSeg = false, segK = 0, segV = 'o';
 let sumOpen = ls.get('pp-sumopen', false) === true;   // summary text is collapsed unless opened
 const WO = new Set(ls.get('pp-wo', []));
 const savedPos = ls.get('pp-pos', null);
@@ -141,7 +166,7 @@ function savePos(){
   const q = Q[i]; if (!q) return;
   const t = au.currentTime || lastGood || startAt || 0;
   ls.set('pp-pos', { id: q.id, t });
-  const key = inSA ? 'S:' + q.id : q.id;
+  const key = (inSA || segS()) ? 'S:' + q.id : q.id;
   if (q.id && t > 0) {
     delete P[key]; P[key] = t;
     const ks = Object.keys(P); if (ks.length > 300) ks.slice(0, ks.length - 300).forEach(x => delete P[x]);
@@ -169,7 +194,7 @@ async function flush(){
 addEventListener('online', flush);
 function heard(){ const q = Q[i]; if (q && q.id && (inSA || inSum) && sumMode[q.id] !== 'ep') { sumMode[q.id] = 'sd'; ls.set('pp-sum', sumMode); delete P['S:' + q.id]; ls.set('pp-posmap', P); } if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); mark(); }
 function mark(){
-  $('rt').textContent = (inSum || inSA) ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
+  $('rt').textContent = (inSum || inSA || segS()) ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
   const q = Q[i]; $('st').textContent = q && H.has(q.id) ? '✓ Finished' : '';
   const ob = ls.get('pp-outbox', []), cfg = loop();
@@ -179,11 +204,12 @@ function mark(){
 function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
 // Summaries have their own reading speed (0.5x to 2x). A change picks up from the last word spoken, not the paragraph start.
 let vrate = +ls.get('pp-vrate', 0.9) || 0.9, sumChar = 0, sawBoundary = false, spokeAt = 0, spokeFrom = 0;
-function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 10; ls.set('pp-vrate', vrate); if (inSA) au.playbackRate = vrate; mark(); if (inSum && speaking) { notePlace(); speakPara(sumK, sumChar); } }
+function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 10; ls.set('pp-vrate', vrate); if (inSA || segS()) au.playbackRate = vrate; mark(); if (inSum && speaking) { notePlace(); speakPara(sumK, sumChar); } }
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
-  stopSum(); inSA = false;
+  stopSum(); inSA = false; inSeg = false; $('segbox').hidden = true; $('segl').hidden = true; $('drive').classList.remove('seg'); $('seek').min = 0;
+  if (isSeg(q)) { loadSeg(q, go); return; }
   if (useSA(q)) { loadSA(q, go, t); return; }
   if (useSummary(q) && synth) { enterSum(go); return; }
   $('drive').classList.remove('sum'); $('sumbox').hidden = true; labels(false);
@@ -203,14 +229,14 @@ $('ct').onclick = async () => {
   if (!ok) { const ta = document.createElement('textarea'); ta.value = q.t; document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch (e) {} ta.remove(); }
   $('ct').textContent = ok ? '✓' : '!'; $('ct').classList.toggle('ok', ok); setTimeout(() => { $('ct').textContent = '⧉'; $('ct').classList.remove('ok'); }, 1200);
 };
-$('slow').onclick = () => (inSum || inSA) ? setVRate(vrate - 0.1) : setRate(R.filter(x => x < rate).pop() || R[0]);
-$('fast').onclick = () => (inSum || inSA) ? setVRate(vrate + 0.1) : setRate(R.find(x => x > rate) || R[R.length - 1]);
+$('slow').onclick = () => (inSum || inSA || segS()) ? setVRate(vrate - 0.1) : setRate(R.filter(x => x < rate).pop() || R[0]);
+$('fast').onclick = () => (inSum || inSA || segS()) ? setVRate(vrate + 0.1) : setRate(R.find(x => x > rate) || R[R.length - 1]);
 function broken(){ return !!au.error || au.networkState === 3 || !au.currentSrc; }
 // Reload the same episode at the last good position (audio links can expire while paused, or the signal drops).
 function recover(){
   const q = Q[i]; if (!q) return;
   startAt = lastGood || au.currentTime || startAt || 0;
-  au.removeAttribute('src'); au.load(); au.src = inSA ? q.sa : q.a; au.playbackRate = inSA ? vrate : rate;
+  au.removeAttribute('src'); au.load(); au.src = (inSA || segS()) ? q.sa : q.a; au.playbackRate = curRate();
   if (wantPlay) au.play().catch(() => {});
 }
 let pausedAt = 0, kickTimer = null;
@@ -239,12 +265,12 @@ function finishNext(){
   else { au.pause(); mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
 }
 $('fn').onclick = finishNext;
-$('prev').onclick = () => { if (i > 0) { load(i - 1, true); return; } const q = Q[i]; if (q && sumOf(q)) { sumMode[q.id] = 0; ls.set('pp-sum', sumMode); } load(i, true, 0); };  // on the first item, start it over
+$('prev').onclick = () => { if (i > 0) { load(i - 1, true); return; } const q = Q[i]; if (q && SG[q.id]) { delete SG[q.id]; saveSeg(); } if (q && sumOf(q)) { sumMode[q.id] = 0; ls.set('pp-sum', sumMode); } load(i, true, 0); };  // on the first item, start it over
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
-$('back').onclick = () => inSum ? jumpPara(-1) : inSA ? jumpSA(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-120); $('fwd').onclick = () => inSum ? jumpPara(1) : inSA ? jumpSA(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(120);
-$('seek').oninput = e => { if (inSum) { scrubbing = true; scrubTo(+e.target.value, false); return; } au.currentTime = +e.target.value; };
+$('back').onclick = () => inSeg ? sk(segV === 's' ? -10 : -30) : inSum ? jumpPara(-1) : inSA ? jumpSA(-1) : sk(-30); $('b150').onclick = () => inSeg ? segJump(-1) : inSum ? jumpPara(-3) : sk(-120); $('fwd').onclick = () => inSeg ? sk(segV === 's' ? 10 : 30) : inSum ? jumpPara(1) : inSA ? jumpSA(1) : sk(30); $('f150').onclick = () => inSeg ? segJump(1) : inSum ? jumpPara(3) : sk(120);
+$('seek').oninput = e => { if (inSum) { scrubbing = true; scrubTo(+e.target.value, false); return; } au.currentTime = (inSeg ? segBase() : 0) + +e.target.value; };
 $('seek').onchange = e => { if (inSum) { scrubbing = false; scrubTo(+e.target.value, true); } };
-au.onplay = () => { au.playbackRate = inSA ? vrate : rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
+au.onplay = () => { au.playbackRate = curRate(); $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
 au.onplaying = () => { clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
 au.onpause = () => { $('play').textContent = '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
 // Moving on at the end: 'ended' is the normal signal, but streams with inserted ads often break off
@@ -259,23 +285,26 @@ function advance(){
     au.play().catch(() => { $('st').textContent = 'Tap ▶ to start the next episode.'; });
   } else { wantPlay = false; $('st').textContent = 'All done. Every episode in this list is finished.'; }
 }
-au.onended = advance;
+au.onended = () => (inSeg && segV === 's') ? segDone() : advance();
 // Safety net: still "playing" but stuck in the last stretch for 8+ seconds means the stream ended without saying so.
 setInterval(() => {
   if (!wantPlay || au.paused || !Q[i]) { stuckSince = 0; lastT = -1; return; }
   const t = au.currentTime;
   if (t !== lastT) { lastT = t; stuckSince = Date.now(); return; }
-  if (nearEnd() && stuckSince && Date.now() - stuckSince > 8000) advance();
+  if (nearEnd() && !segS() && stuckSince && Date.now() - stuckSince > 8000) advance();
 }, 2000);
 au.onerror = () => {
   if (!Q[i] || !au.getAttribute('src')) return;
   if (inSA) { saFail.add(Q[i].id); const go = wantPlay; au.removeAttribute('src'); load(i, go); return; }
+  // A segment's summary would not load (its recording is published within the hour): carry on with the original.
+  if (segS()) { saFail.add(Q[i].id); const go = wantPlay, k = segK; au.removeAttribute('src'); load(i, go, (Q[i].sg[k] || [0])[0]); $('st').textContent = 'The summary recording is not ready yet. Playing the original.'; return; }
   if (wantPlay && nearEnd()) { advance(); return; }
   if (tries < 3) { tries++; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; clearTimeout(retryTimer); retryTimer = setTimeout(recover, 1500 * tries); return; }
   $('st').classList.add('err'); $('st').textContent = 'This episode would not load. Tap ▶ to try again, or ⏭ to skip it.';
 };
-au.onloadedmetadata = () => { au.playbackRate = inSA ? vrate : rate; if (startAt && startAt < (au.duration || 0) - 5) au.currentTime = startAt; startAt = 0; $('seek').max = Math.floor(au.duration || 0); $('len').textContent = f(au.duration); };
+au.onloadedmetadata = () => { au.playbackRate = curRate(); if (startAt && (inSeg || startAt < (au.duration || 0) - 5)) au.currentTime = startAt; startAt = 0; if (inSeg) { segUI(); return; } $('seek').max = Math.floor(au.duration || 0); $('len').textContent = f(au.duration); };
 au.ontimeupdate = () => {
+  if (inSeg) { segTick(); return; }
   $('seek').value = Math.floor(au.currentTime); $('pos').textContent = f(au.currentTime); if (au.currentTime > 0) lastGood = au.currentTime;
   if (inSA) { const k = paraAt(Q[i], au.currentTime); if (k !== sumK) { sumK = k; showPara(); } }
   // Finished = heard the last 10% by actually listening: the player must have been past 90% for
@@ -310,7 +339,7 @@ const sil = new Audio(); sil.loop = true;
   v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true); b.fill(128, 44);
   sil.src = URL.createObjectURL(new Blob([b], { type: 'audio/wav' })); sil.volume = 0.01; }
 const sumOf = q => q && Array.isArray(q.sm) && q.sm.length ? q.sm : null;
-const useSummary = q => !!(sumOf(q) && (synth || q.sa) && (!q.a || (sumMode[q.id] !== 'ep' && (!H.has(q.id) || sumMode[q.id] === 'sd'))));
+const useSummary = q => !!(sumOf(q) && !(q && q.sg) && (synth || q.sa) && (!q.a || (sumMode[q.id] !== 'ep' && (!H.has(q.id) || sumMode[q.id] === 'sd'))));
 // A summary with a recorded reading (sa) plays as real audio: it keeps going in the background and on the lock screen.
 // If that file will not load, the phone's voice reads the text instead.
 const saFail = new Set();
@@ -440,7 +469,7 @@ for (const k of Object.keys(SR)) if (Date.now() - SR[k] > 3 * 864e5) delete SR[k
 ls.set('pp-sreq', SR);
 function srBtn(){
   const q = Q[i], b = $('sr');
-  b.hidden = !(q && q.id && q.a && !sumOf(q) && loop());
+  b.hidden = !(q && q.id && q.a && !sumOf(q) && !q.sg && loop());
   if (b.hidden) return;
   b.disabled = !!SR[q.id];
   b.textContent = SR[q.id] ? '⏳ Summary requested · it will come back here' : '📝 Summarize instead · next episode';
@@ -488,6 +517,120 @@ $('sumhd').onclick = () => { sumOpen = !sumOpen; ls.set('pp-sumopen', sumOpen); 
 $('full').onclick = () => toEpisode(false);
 $('here').onclick = () => toEpisode(true);
 if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = () => {};
+// ---- Segmented episodes. The queue sends, for shows with Segments on, where each segment of the episode starts and
+// ends (the ad breaks between them are skipped) and where that segment's part of the summary recording begins. Each
+// segment plays either as the original or as its summary; the big button switches the one playing, and the list below
+// sets any of them ahead of time. Choices and places are remembered per episode on this phone.
+function isSeg(q){ return !!(q && q.a && q.sa && Array.isArray(q.sg) && q.sg.length && Array.isArray(q.ss) && q.ss.length && !saFail.has(q.id) && q.sg.every(g => Array.isArray(g) && g[1] > g[0] && g[2] >= 0 && g[2] < q.ss.length)); }
+function segS(){ return inSeg && segV === 's'; }
+function curRate(){ return (inSA || segS()) ? vrate : rate; }
+function segSt(q){ const st = SG[q.id] = SG[q.id] || {}; st.m = st.m || {}; st.o = st.o || {}; st.s = st.s || {}; return st; }
+function segMode(q, k){ const st = SG[q.id]; return (st && st.m && st.m[k]) || ((q.gf && k === 0) ? 'o' : q.gd === 's' ? 's' : 'o'); }
+function saveSeg(){ const ks = Object.keys(SG); if (ks.length > 120) ks.slice(0, ks.length - 120).forEach(x => delete SG[x]); ls.set('pp-seg', SG); }
+// Where segment k's summary starts and stops inside the summary recording (it stops just short of the next one).
+function segSum(q, k){ const a = q.ss[q.sg[k][2]] || 0, nx = k < q.sg.length - 1 ? q.ss[q.sg[k + 1][2]] : null; return [a, nx == null ? Infinity : Math.max(a + 0.5, nx - 0.55)]; }
+function segBase(){ const q = Q[i]; return segV === 's' ? segSum(q, segK)[0] : q.sg[segK][0]; }
+function segSpan(){ const q = Q[i]; if (segV !== 's') return q.sg[segK][1] - q.sg[segK][0]; const [a, b] = segSum(q, segK); return Math.max(1, (b === Infinity ? (au.duration && au.getAttribute('src') === q.sa ? au.duration : a + 60) : b) - a); }
+function loadSeg(q, go){
+  inSeg = true; const st = segSt(q);
+  segK = Math.max(0, Math.min(q.sg.length - 1, st.k || 0));
+  $('drive').classList.remove('sum'); $('drive').classList.add('seg'); $('sumbox').hidden = true; labels(false);
+  $('t').textContent = q.t;
+  segStart(go);
+}
+function segStart(go){
+  const q = Q[i], st = segSt(q), g = q.sg[segK]; st.k = segK; saveSeg();
+  segV = segMode(q, segK);
+  clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; $('st').classList.remove('err');
+  let t, src;
+  if (segV === 's') { const [a, b] = segSum(q, segK), sv = st.s[segK] || 0; t = sv > a && sv < b - 1 ? sv : a; src = q.sa; }
+  else { const sv = st.o[segK] || 0; t = sv > g[0] && sv < g[1] - 2 ? sv : g[0]; src = q.a; }
+  lastGood = t;
+  if (au.getAttribute('src') === src && au.readyState >= 1 && !au.error) { startAt = 0; if (Math.abs(au.currentTime - t) > 0.4) au.currentTime = t; }
+  else { startAt = t; au.src = src; }
+  au.playbackRate = curRate();
+  segUI(); mark(); savePos();
+  if (go) au.play().catch(() => { $('play').textContent = '▶'; });
+}
+function segDone(){
+  const q = Q[i], go = wantPlay || !au.paused;
+  if (segK < q.sg.length - 1) { segK++; segStart(go); }
+  else { const st = segSt(q); st.k = 0; st.o = {}; st.s = {}; saveSeg(); advance(); }
+}
+function segTick(){
+  const q = Q[i]; if (!q || !q.sg || au.seeking || startAt) return;
+  const t = au.currentTime, st = segSt(q); if (t > 0) lastGood = t;
+  let pos;
+  if (segV === 's') {
+    const [a, b] = segSum(q, segK);
+    if (t >= b) { delete st.s[segK]; segDone(); return; }
+    if (t < a - 0.5) { au.currentTime = a; return; }
+    st.s[segK] = t; pos = t - a;
+  } else {
+    const g = q.sg[segK];
+    if (t >= g[1] - 0.15) {
+      delete st.o[segK];
+      // Still original and the next segment starts right here (or you moved ahead into a later one): keep going without a jump.
+      const j = q.sg.findIndex((x, n) => n > segK && t >= x[0] - 1.5 && t < x[1] - 1);
+      if (j > segK && segMode(q, j) === 'o') { segK = j; st.k = j; saveSeg(); segUI(); mark(); return; }
+      if (j < 0 && segK === q.sg.length - 1) { segDone(); return; }
+      if (j > segK) { segK = j - 1; }
+      segDone(); return;
+    }
+    if (t < g[0] - 1.5) {   // moved back past the start of this segment (lock-screen scrub)
+      const j = q.sg.findIndex(x => t >= x[0] - 1.5 && t < x[1]);
+      if (j >= 0 && j !== segK && segMode(q, j) === 'o') { segK = j; st.k = j; saveSeg(); segUI(); mark(); } else au.currentTime = g[0];
+      return;
+    }
+    st.o[segK] = t; pos = t - g[0];
+  }
+  $('seek').value = Math.floor(Math.max(0, pos)); $('pos').textContent = f(Math.max(0, pos));
+  // Finished = the last segment heard to 90% by actually listening (same rule as ordinary episodes).
+  if (segK === q.sg.length - 1 && pos >= segSpan() * 0.9) { if (!pastEnd) pastEnd = Date.now(); else if (Date.now() - pastEnd > 3000) heard(); } else pastEnd = 0;
+  if (Date.now() - lastSave > 5000) { lastSave = Date.now(); savePos(); saveSeg(); }
+}
+function segToggle(k){
+  const q = Q[i]; if (!inSeg || !q) return; const st = segSt(q);
+  st.m[k] = segMode(q, k) === 'o' ? 's' : 'o'; saveSeg();
+  if (k === segK) segStart(wantPlay || !au.paused); else segUI();
+}
+function segAll(v){ const q = Q[i]; if (!inSeg || !q) return; const st = segSt(q), was = segMode(q, segK); q.sg.forEach((g, k) => { st.m[k] = v; }); saveSeg(); if (was !== v) segStart(wantPlay || !au.paused); else segUI(); }
+function segGo(k){ const q = Q[i]; if (!inSeg || !q || k < 0 || k >= q.sg.length) return; segK = k; segStart(true); window.scrollTo(0, 0); }
+// ⏮/⏭ segment: back restarts this segment, or goes to the one before when you are within its first seconds.
+function segJump(d){
+  const q = Q[i]; if (!inSeg || !q) return; const st = segSt(q), into = au.currentTime - segBase();
+  if (d < 0) { delete st.o[segK]; delete st.s[segK]; if (into < 4 && segK > 0) { segK--; delete st.o[segK]; delete st.s[segK]; } segStart(wantPlay || !au.paused); }
+  else if (segK < q.sg.length - 1) { segK++; segStart(wantPlay || !au.paused); }
+}
+function segUI(){
+  const q = Q[i]; if (!q || !inSeg) return; const n = q.sg.length, g = q.sg[segK];
+  $('segbox').hidden = false; $('segl').hidden = false;
+  $('s').textContent = sub(q, i);
+  const hd = $('seghd'); hd.textContent = 'Segment ' + (segK + 1) + ' of ' + n + ' · ' + (segV === 's' ? 'Summary' : 'Original');
+  if (g[3]) { const sm = document.createElement('small'); sm.textContent = g[3]; hd.appendChild(sm); }
+  $('sgt').textContent = segV === 's' ? '▶ Play this segment in full' : '🔊 Summary of this segment instead';
+  const span = segSpan(); $('seek').min = 0; $('seek').max = Math.max(1, Math.floor(span)); $('len').textContent = f(span);
+  $('back').textContent = segV === 's' ? '−10s' : '−30s'; $('fwd').textContent = segV === 's' ? '+10s' : '+30s';
+  $('b150').textContent = '⏮ segment'; $('f150').textContent = 'segment ⏭';
+  if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: (segV === 's' ? 'Summary · ' : '') + 'Segment ' + (segK + 1) + ' of ' + n + ' · ' + q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
+  const box = $('segl'); box.innerHTML = '';
+  const h = document.createElement('div'); h.className = 'seglh';
+  const hl = document.createElement('span'); hl.textContent = 'Segments';
+  const ao = document.createElement('button'); ao.type = 'button'; ao.textContent = 'All original'; ao.onclick = () => segAll('o');
+  const as = document.createElement('button'); as.type = 'button'; as.textContent = 'All summaries'; as.onclick = () => segAll('s');
+  h.append(hl, ao, as); box.appendChild(h);
+  q.sg.forEach((x, k) => {
+    const r = document.createElement('div'); r.className = 'sgr' + (k === segK ? ' cur' : '');
+    const nm = document.createElement('div'); nm.className = 'sgn'; nm.textContent = (k + 1) + '. ' + (x[3] || 'Segment ' + (k + 1));
+    const sm = document.createElement('small'); sm.textContent = f(x[0]) + ' · ' + f(x[1] - x[0]) + ' long'; nm.appendChild(sm);
+    nm.onclick = () => segGo(k);
+    const v = segMode(q, k), b = document.createElement('button'); b.type = 'button'; b.className = 'sgv' + (v === 's' ? ' s' : '');
+    b.textContent = v === 's' ? '🔊 Summary' : 'Original'; b.setAttribute('aria-label', 'Segment ' + (k + 1) + ' plays as ' + (v === 's' ? 'summary' : 'original') + '. Tap to switch.');
+    b.onclick = () => segToggle(k);
+    r.append(nm, b); box.appendChild(r);
+  });
+}
+$('sgt').onclick = () => segToggle(segK);
 const L = $('list');
 function move(k, d){
   const j = k + d; if (j < 0 || j >= Q.length) return;
@@ -504,7 +647,8 @@ function renderList(){
     const box = document.createElement('div'); box.className = 'lt';
     const a = document.createElement('span'); a.textContent = q.t; const b = document.createElement('small'); b.textContent = q.s + (rel(q) ? ' · ' + rel(q) : '') + (q.d ? ' · ' + f(q.d) : '');
     box.append(a, b);
-    if (q.sm && !H.has(q.id) && sumMode[q.id] !== 'ep') { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '\ud83d\udd0a summary'; b.appendChild(tg); }
+    if (isSeg(q)) { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '\u2702 ' + q.sg.length + ' segments'; b.appendChild(tg); }
+    else if (q.sm && !q.sg && !H.has(q.id) && sumMode[q.id] !== 'ep') { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '\ud83d\udd0a summary'; b.appendChild(tg); }
     else if (SR[q.id]) { const tg = document.createElement('span'); tg.className = 'tag'; tg.textContent = '\u23f3 summary coming'; b.appendChild(tg); }
     const up = document.createElement('button'); up.className = 'mv'; up.textContent = '↑'; up.setAttribute('aria-label', 'Move up'); up.disabled = k === 0;
     const dn = document.createElement('button'); dn.className = 'mv'; dn.textContent = '↓'; dn.setAttribute('aria-label', 'Move down'); dn.disabled = k === Q.length - 1;
