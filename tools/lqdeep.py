@@ -299,8 +299,14 @@ def finalize(D):
                 for it in (load(f'{D}/feed/{k}.json', {}) or {}).get('items', []):
                     if it['id'] == iid:
                         pub = pdate(it.get('pub'))
-            if 'no transcript' in reason or (pub and (NOW - pub).days >= 2):
-                doc = {'err': 'no transcript available' if 'no transcript' in reason else 'could not be transcribed', 'at': now}
+            # Reasons the Mac transcriber settles for good (nothing to transcribe) are shown as they are.
+            settled = ('not yet released', 'no speech found', 'too long to transcribe', 'still streaming')
+            if 'no transcript' in reason:
+                doc = {'err': 'no transcript available', 'at': now}
+            elif any(k in reason for k in settled):
+                doc = {'err': reason, 'at': now}
+            elif pub and (NOW - pub).days >= 2:
+                doc = {'err': 'could not be transcribed: ' + reason, 'at': now}
             errs.append(f'{iid}: {reason}')
         if doc is not None:
             w = {'op': 'set', 'collection': 'deep', 'doc_id': iid, 'data': doc}
