@@ -68,7 +68,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
   <div class="grid">
     <button id="play" aria-label="Play or pause">▶</button>
     <button id="back">−30s</button><button id="fwd">+30s</button>
-    <button id="b150">−2:30</button><button id="f150">+2:30</button>
+    <button id="b150">−2:00</button><button id="f150">+2:00</button>
     <button id="prev" aria-label="Previous episode">⏮</button><button id="next" aria-label="Next episode">⏭</button>
     <button id="slow" class="spd"><span>−</span><small>slower</small></button><button id="fast" class="spd"><span>+</span><small>faster</small></button>
   </div>
@@ -241,7 +241,7 @@ function finishNext(){
 $('fn').onclick = finishNext;
 $('prev').onclick = () => { if (i > 0) { load(i - 1, true); return; } const q = Q[i]; if (q && sumOf(q)) { sumMode[q.id] = 0; ls.set('pp-sum', sumMode); } load(i, true, 0); };  // on the first item, start it over
 $('next').onclick = () => { if (i < Q.length - 1) load(i + 1, true); };
-$('back').onclick = () => inSum ? jumpPara(-1) : inSA ? jumpSA(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-150); $('fwd').onclick = () => inSum ? jumpPara(1) : inSA ? jumpSA(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(150);
+$('back').onclick = () => inSum ? jumpPara(-1) : inSA ? jumpSA(-1) : sk(-30); $('b150').onclick = () => inSum ? jumpPara(-3) : sk(-120); $('fwd').onclick = () => inSum ? jumpPara(1) : inSA ? jumpSA(1) : sk(30); $('f150').onclick = () => inSum ? jumpPara(3) : sk(120);
 $('seek').oninput = e => { if (inSum) { scrubbing = true; scrubTo(+e.target.value, false); return; } au.currentTime = +e.target.value; };
 $('seek').onchange = e => { if (inSum) { scrubbing = false; scrubTo(+e.target.value, true); } };
 au.onplay = () => { au.playbackRate = inSA ? vrate : rate; $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
@@ -279,7 +279,7 @@ au.ontimeupdate = () => {
   $('seek').value = Math.floor(au.currentTime); $('pos').textContent = f(au.currentTime); if (au.currentTime > 0) lastGood = au.currentTime;
   if (inSA) { const k = paraAt(Q[i], au.currentTime); if (k !== sumK) { sumK = k; showPara(); } }
   // Finished = heard the last 10% by actually listening: the player must have been past 90% for
-  // 3 seconds of natural playback, so a +2:30 tap that lands near the end does not cross it off.
+  // 3 seconds of natural playback, so a +2:00 tap that lands near the end does not cross it off.
   if (au.duration && au.currentTime >= au.duration * 0.9) { if (!pastEnd) pastEnd = Date.now(); else if (Date.now() - pastEnd > 3000) heard(); }
   else pastEnd = 0;
   if (Date.now() - lastSave > 5000) { lastSave = Date.now(); savePos(); }
@@ -339,7 +339,7 @@ function saveSum(){ const q = Q[i]; if (q && inSum) { delete sumMode[q.id]; sumM
 function voice(){ const vs = synth.getVoices() || []; return vs.find(v => /^en[-_]US/i.test(v.lang) && /natural|neural|online/i.test(v.name)) || vs.find(v => /^en[-_]US/i.test(v.lang) && v.localService) || vs.find(v => /^en/i.test(v.lang)) || null; }
 function labels(on){
   $('back').textContent = on ? '−1 ¶' : '−30s'; $('fwd').textContent = on ? '+1 ¶' : '+30s';
-  $('b150').textContent = on ? '−3 ¶' : '−2:30'; $('f150').textContent = on ? '+3 ¶' : '+2:30';
+  $('b150').textContent = on ? '−3 ¶' : '−2:00'; $('f150').textContent = on ? '+3 ¶' : '+2:00';
 }
 function showPara(){
   const q = Q[i], sm = sumOf(q); if (!sm) return;
