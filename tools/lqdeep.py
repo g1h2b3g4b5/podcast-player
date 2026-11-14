@@ -58,6 +58,31 @@ def pdate(s):
         return None
 
 
+WAITING = ('not yet released', 'still streaming')   # a premiere or live stream: summarized once it has aired
+MONTHS = {m: i + 1 for i, m in enumerate('jan feb mar apr may jun jul aug sep oct nov dec'.split())}
+
+
+def recheck_at(err, at):
+    """When a video that was not out yet is worth another look: its announced release time plus 3 hours
+    (time for it to finish airing), and never sooner than 6 hours after the last look."""
+    err, due = str(err or ''), None
+    if err.startswith('still streaming'):
+        due = at
+    m = re.search(r'in (\d+) (minute|hour|day)', err)
+    if m:
+        due = at + dt.timedelta(**{m.group(2) + 's': int(m.group(1))})
+    m = re.search(r'on ([A-Za-z]{3})[a-z]* (\d{1,2})', err)
+    if not due and m and m.group(1).lower() in MONTHS:
+        try:
+            due = dt.datetime(at.year, MONTHS[m.group(1).lower()], int(m.group(2)), 12, tzinfo=dt.timezone.utc)
+            if (at - due).days > 180:
+                due = due.replace(year=at.year + 1)
+        except ValueError:
+            due = None
+    due = (due or at + dt.timedelta(days=1)) + dt.timedelta(hours=3)
+    return max(due, at + dt.timedelta(hours=6))
+
+
 def log(D, msg):
     with open(f'{D}/audio.log', 'a') as f:
         f.write(time.strftime('%H:%M:%S ') + msg + '\n')
@@ -79,6 +104,12 @@ def prep(D):
                 and at and (NOW - at).total_seconds() >= 20 * 3600):
             rv = json.load(open(p)) if os.path.exists(p) else {}
             retry[iid] = (rv.get('version') if isinstance(rv, dict) else None) or 1   # err docs are written once
+            continue
+        # A premiere or live stream that had not aired yet is looked at again after its release time, as often as it
+        # takes (each look rewrites the document, so its version is read fresh every run).
+        if iid.startswith('y-') and str(doc.get('err') or '').startswith(WAITING) and at and NOW >= recheck_at(doc.get('err'), at):
+            rv = json.load(open(p)) if os.path.exists(p) else {}
+            retry[iid] = (rv.get('version') if isinstance(rv, dict) else None) or 1
             continue
         have.add(iid)
     st, asked = {}, set()
@@ -181,6 +212,12 @@ def audio(D):
             from faster_whisper import WhisperModel
             model = WhisperModel(os.environ.get('LQ_MODEL', 'base.en'), device='cpu', compute_type='int8', cpu_threads=os.cpu_count() or 2)
             log(D, f'model ready; {len(need)} episodes')
+        def _secs(n):
+            try:
+                return float(n.get('dur') or 0)
+            except Exception:
+                return 0.0
+        need.sort(key=_secs)  # shortest first, so one long recording never holds up the rest
         for n in need:
             out = f"{D}/tx/{n['id']}.json"
             if os.path.exists(out):
@@ -195,13 +232,28 @@ def audio(D):
                         if not b:
                             break
                         f.write(b)
-                segs, info = model.transcribe(mp3, language='en', vad_filter=True, beam_size=1, condition_on_previous_text=False)
-                rows = [[round(s.start, 1), s.text.strip()] for s in segs if s.text.strip()]
+                # Long recordings are transcribed in pieces: whisper builds its features for
+                # the whole input at once, and a 3 hour file runs the sandbox out of memory.
+                from faster_whisper import decode_audio
+                SR = 16000
+                piece = int(os.environ.get('LQ_PIECE_MIN', '20')) * 60 * SR
+                wav = decode_audio(mp3, sampling_rate=SR)
+                os.remove(mp3)
+                dur = len(wav) / SR
+                npieces = max(1, -(-len(wav) // piece))
+                rows = []
+                for k in range(npieces):
+                    off = k * piece
+                    segs, _ = model.transcribe(wav[off:off + piece], language='en', vad_filter=True, beam_size=1, condition_on_previous_text=False)
+                    rows += [[round(off / SR + s.start, 1), s.text.strip()] for s in segs if s.text.strip()]
+                    if npieces > 1:
+                        log(D, f"piece {k + 1}/{npieces} of {n['id']} ({(time.time() - t0) / 60:.1f} min so far)")
+                del wav
                 if not rows:
                     raise RuntimeError('no speech found')
                 json.dump(rows, open(out, 'w'))
-                open(f"{D}/tx/{n['id']}.dur", 'w').write(str(round(info.duration or 0, 1)))
-                log(D, f"done {n['id']} ({info.duration / 60:.0f} min audio in {(time.time() - t0) / 60:.1f} min)")
+                open(f"{D}/tx/{n['id']}.dur", 'w').write(str(round(dur, 1)))
+                log(D, f"done {n['id']} ({dur / 60:.0f} min audio in {(time.time() - t0) / 60:.1f} min)")
             except Exception as e:
                 open(f"{D}/tx/{n['id']}.err", 'w').write(str(e)[:200])
                 log(D, f"FAILED {n['id']}: {str(e)[:200]}")
@@ -437,7 +489,7 @@ def finalize(D):
             w = {'op': 'set', 'collection': 'deep', 'doc_id': iid, 'data': doc}
             if n.get('retry'):
                 w['if_version'] = n['retry']
-                if doc.get('err'):
+                if doc.get('err') and not str(doc['err']).startswith(WAITING):
                     doc['retried'] = True
             writes.append(w)
     files = []
