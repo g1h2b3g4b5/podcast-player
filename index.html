@@ -14,7 +14,10 @@
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.35 system-ui,-apple-system,sans-serif}
 .drive{min-height:100vh;min-height:100svh;display:flex;flex-direction:column;gap:8px;padding:max(10px,env(safe-area-inset-top)) 12px 12px;max-width:720px;margin:0 auto}
 .hd{display:flex;align-items:flex-start;gap:6px}.hd>div{flex:1;min-width:0}
+
+.sga{flex:0 0 auto;width:44px;min-height:44px;font-size:18px;border-radius:12px;background:var(--bg);box-shadow:inset 0 0 0 1px var(--ln);color:var(--ac)}
 .ct{flex:0 0 auto;width:40px;height:40px;margin:-6px -6px 0 0;border-radius:12px;font-size:18px;font-weight:400;background:transparent;box-shadow:none;color:var(--mu);opacity:.7}
+.ct.ask{display:flex;align-items:center;justify-content:center;text-decoration:none;color:var(--ac);opacity:1;font-size:20px;margin-right:2px}
 .ct.ok{color:var(--ok);opacity:1}
 .hd h1{font-size:17px;margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .hd p{margin:2px 0 0;color:var(--mu);font-size:14px}
@@ -78,7 +81,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
 </head>
 <body>
 <div class="drive" id="drive">
-  <div class="hd"><div><h1 id="t">No episodes yet</h1><p id="s"></p></div><button id="ct" class="ct" aria-label="Copy episode title">⧉</button></div>
+  <div class="hd"><div><h1 id="t">No episodes yet</h1><p id="s"></p></div><a id="ask" class="ct ask" href="https://claude.ai/new" target="_blank" rel="noopener" aria-label="Ask Claude about this episode">✦</a><button id="ct" class="ct" aria-label="Copy episode title">⧉</button></div>
   <input id="seek" type="range" min="0" max="1" step="1" value="0" aria-label="Position">
   <div class="time"><span id="pos">0:00</span><b id="rt">1×</b><span id="len">0:00</span></div>
   <div class="sumbox" id="sumbox" hidden>
@@ -229,6 +232,26 @@ function load(k, go, t){
   mark(); savePos();
   if (go) au.play().catch(() => { $('play').textContent = '▶'; });
 }
+// ---- Ask Claude: opens a new Claude chat with the episode (or the segment playing) already described, ready for a question.
+function askURL(q, k){
+  if (!q) return 'https://claude.ai/new';
+  const segd = q.sg && k != null && q.sg[k], sm = sumOf(q) || [];
+  let L = ['About the podcast episode “' + q.t + '” from ' + q.s + (rel(q) ? ' (' + rel(q) + ')' : '') + '.'];
+  let txt = sm;
+  if (segd) {
+    L.push('Segment ' + (k + 1) + ' of ' + q.sg.length + (segd[3] ? ': “' + segd[3] + '”' : '') + ', ' + f(segd[0]) + '–' + f(segd[1]) + ' in the episode.');
+    const a = segd[2], b = k < q.sg.length - 1 ? q.sg[k + 1][2] : sm.length; txt = sm.slice(a, b);
+  }
+  if (q === Q[i] && !inSum && au.getAttribute('src') === q.a && au.currentTime > 5) L.push('I am at ' + f(au.currentTime) + ' in it.');
+  if (q.a) L.push('Episode audio: ' + q.a);
+  if (q.v) L.push('Video: https://www.youtube.com/watch?v=' + q.v);
+  let body = txt.map(x => Array.isArray(x) ? x[1] : x).filter(Boolean).join('\n\n');
+  if (body.length > 2500) body = body.slice(0, 2500).replace(/\s+\S*$/, '') + ' …';
+  if (body) L.push('', 'Summary of this ' + (segd ? 'segment' : 'episode') + ' from my Listening Queue:', body);
+  L.push('', 'My question: ');
+  return 'https://claude.ai/new?q=' + encodeURIComponent(L.join('\n'));
+}
+$('ask').onclick = function(){ const q = Q[i]; this.href = askURL(q, inSeg ? segK : null); };
 $('ct').onclick = async () => {
   const q = Q[i]; if (!q) return; let ok = false;
   try { await navigator.clipboard.writeText(q.t); ok = true; } catch (e) {}
@@ -633,7 +656,10 @@ function segUI(){
     const v = segMode(q, k), b = document.createElement('button'); b.type = 'button'; b.className = 'sgv' + (v === 's' ? ' s' : '');
     b.textContent = v === 's' ? '🔊 Summary' : 'Original'; b.setAttribute('aria-label', 'Segment ' + (k + 1) + ' plays as ' + (v === 's' ? 'summary' : 'original') + '. Tap to switch.');
     b.onclick = () => segToggle(k);
-    r.append(nm, b); box.appendChild(r);
+    const ak = document.createElement('a'); ak.className = 'sga'; ak.textContent = '✦'; ak.target = '_blank'; ak.rel = 'noopener';
+    ak.style.cssText = 'display:flex;align-items:center;justify-content:center;text-decoration:none';
+    ak.setAttribute('aria-label', 'Ask Claude about segment ' + (k + 1)); ak.href = 'https://claude.ai/new'; ak.onclick = function(){ this.href = askURL(q, k); };
+    r.append(nm, b, ak); box.appendChild(r);
   });
 }
 $('sgt').onclick = () => segToggle(segK);
