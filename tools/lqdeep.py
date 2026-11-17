@@ -361,6 +361,10 @@ def read_seg(D, iid, n):
         prev = en
     if not out:
         raise ValueError('no usable segments')
+    # Ad breaks go at the END of a segment (Ryan, Nov 17 2026): each segment starts where the show's own
+    # content resumes and runs right up to the next segment's start, so the ads before it are its tail.
+    out = [(st, out[k + 1][0] if k < len(out) - 1 else en, title, paras)
+           for k, (st, en, title, paras) in enumerate(out)]
     covered = sum(en - st for st, en, _, _ in out)
     if covered < 0.3 * total:
         raise ValueError(f'segments cover only {covered / 60:.0f} of {total / 60:.0f} minutes')
@@ -393,7 +397,10 @@ def chunks(D):
         rows = json.load(open(p))
         end = max((r[0] for r in rows), default=0)
         if n.get('seg'):
-            body = [f"TITLE: {n['title']}\nSOURCE: {n['ch']}\nLENGTH: {fmt(seg_len(D, iid, rows, n))}\n"]
+            body = [f"TITLE: {n['title']}\nSOURCE: {n['ch']}\nLENGTH: {fmt(seg_len(D, iid, rows, n))}\n"
+                    "SEGMENT TIMES: each segment's start is the time of the first line where the show's own content "
+                    "resumes AFTER an ad break (never the time of an ad, sponsor read or break bumper); its end is the "
+                    "last line of show content before the next ad break. Ads must never be at the start of a segment.\n"]
             body += [f'[{fmt(t)}] {x}' for t, x in rows]
             open(f'{D}/chunks/{iid}.txt', 'w').write('\n'.join(body))
             jobs.append({'id': iid, 'seg': True, 'file': f'{D}/chunks/{iid}.txt', 'out': f'{D}/sum/{iid}.json',
