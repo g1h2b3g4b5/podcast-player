@@ -381,7 +381,7 @@ function loadSA(q, go, t){
   t = t === 0 ? 0 : (P['S:' + q.id] || 0);
   clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; lastGood = t; $('st').classList.remove('err'); $('st').textContent = '';
   startAt = t; au.src = q.sa; au.playbackRate = vrate;
-  $('t').textContent = q.t; $('s').textContent = 'Summary · ' + sub(q, i);
+  $('t').textContent = q.t; $('s').textContent = 'Summary · recorded voice · ' + sub(q, i);
   $('seek').value = 0; $('pos').textContent = f(startAt); $('len').textContent = '0:00';
   if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: 'Summary · ' + q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
   sumK = paraAt(q, t); showPara(); mark(); savePos();
@@ -414,7 +414,7 @@ function enterSum(go){
   au.pause(); au.removeAttribute('src'); au.load();
   const saved = sumMode[q.id]; sumK = typeof saved === 'number' ? saved : 0; sumChar = 0;
   $('drive').classList.add('sum'); $('sumbox').hidden = false; labels(true);
-  $('t').textContent = q.t; $('s').textContent = 'Summary · ' + sub(q, i);
+  $('t').textContent = q.t; $('s').textContent = 'Summary · ⚠ phone voice (audio not ready) · ' + sub(q, i);
   if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = new MediaMetadata({ title: q.t, artist: 'Summary · ' + q.s, artwork: [{ src: 'icon-512.png', sizes: '512x512', type: 'image/png' }] }); } catch (e) {} }
   showPara(); mark(); savePos(); $('play').textContent = '▶';
   if (go) resumeSum();
