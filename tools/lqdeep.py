@@ -363,7 +363,10 @@ def read_seg(D, iid, n):
         raise ValueError('no usable segments')
     # Ad breaks go at the END of a segment (Ryan, Nov 17 2026): each segment starts where the show's own
     # content resumes and runs right up to the next segment's start, so the ads before it are its tail.
-    out = [(st, out[k + 1][0] if k < len(out) - 1 else en, title, paras)
+    # The last segment always runs to the end of the audio (Ryan, Nov 20 2026): the summarizer sometimes ends it at
+    # the last ad break although show content follows (Ben Shapiro, Nov 20: cut at 58:04 of 64:33, just as the ICC
+    # story began), so the player moved on early. Trailing ads or an outro become that segment's tail instead.
+    out = [(st, out[k + 1][0] if k < len(out) - 1 else total, title, paras)
            for k, (st, en, title, paras) in enumerate(out)]
     covered = sum(en - st for st, en, _, _ in out)
     if covered < 0.3 * total:
