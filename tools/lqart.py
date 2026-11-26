@@ -1,27 +1,20 @@
 """Listening Queue articles: blog posts read aloud in full, or as an audio summary.
 
-Run by the "Listening Queue articles" scheduled task, which downloads the queue's database into DIR
-(ArtifactData out_dir dumps: DIR/config/*.json, DIR/feed/art.json, DIR/state/*.json, DIR/deep/*.json) and then:
+Used by the "Listening Queue audio summaries" scheduled task, which downloads the queue's database into DIR.
 
   python3 -I lqart.py feeds DIR
-      Looks up newly added blogs (DIR/config/blogSubs.json), drops removed ones, reads every blog's feed and writes
-      DIR/out/blogs.json (the new config/blogs document) and DIR/out/art.json (the new feed/art document).
-  python3 -I lqart.py prep DIR
-      Picks the posts that need audio: posts set aside in the queue (state later) with the version asked for in
-      config/artMode (f = read in full, s = summary, b = both), plus requests from the player's drop-box sheet
-      (DIR/loop.json rows "s-<id>" and "f-<id>"). Fetches each post's text into DIR/art/<id>.json, writes
-      DIR/chunks/<id>.txt and DIR/jobs.json for the ones that need a summary, DIR/need.json, and DIR/sbatch.json
-      (state / artMode writes for player requests).
-  python3 -I lqart.py finalize DIR
-      Reads DIR/sum/<id>.json (a JSON array of summary paragraphs) and writes DIR/artbatch_<n>.json: the
-      ArtifactData batch writes for deep/<id> and atext/<id>.
-  python3 -I lqart.py stage DIR ; python3 -I lqdeep.py speak DIR/sp ; python3 -I lqart.py publish DIR REPO
-      Makes the audio for those documents before they are written (stage lays them out under DIR/sp, speak reads
-      them aloud, publish copies the audio into REPO/a/ and adds the audio fields to the artbatch writes).
+      Looks up newly added blogs (DIR/config/blogSubs.json), drops removed ones, reads every blog's feed and, when
+      anything changed, writes DIR/out/blogs.json (the new config/blogs document) and DIR/out/art.json (the new
+      feed/art document). Its last output line starts with "FEEDS CHANGED" or "FEEDS UNCHANGED".
 
-deep/<id> for a post: {src: 'art', at, p: [[secs, text], ...] (summary), ft: paragraph count of the full text
-(the text itself is atext/<id> = {t: [...]}), err / serr / ferr}. The audio publisher (lqdeep.py speak) then adds
-sa/ss/sd for the summary and fa/fd for the full read-aloud.
+  needs(DIR, have) is called by lqdeep.py prep. It picks the posts that need audio: posts set aside in the queue
+  (state/<id> = {s: later, m: f | s | b}; m says which version: f = read in full, s = summary, b = both) and requests
+  from the player's drop-box sheet (DIR/loop.json rows "s-<id>" and "f-<id>"). It fetches each post's text and
+  returns the entries for need.json plus the state writes for player requests.
+
+A post "b-<hash>" has up to two documents in the deep collection, both in the usual shape {p: [[secs, text], ...]}:
+deep/b-<hash> is its summary; deep/bf-<hash> is its full text, paragraph by paragraph (full: 1). The audio
+publisher reads both aloud like any other summary (a/b-<hash>.mp3 and a/bf-<hash>.mp3).
 """
 import datetime as dt, email.utils, glob, hashlib, html, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
@@ -35,7 +28,7 @@ KEEP_DAYS = 21      # a listed post stays this long even after it leaves the blo
 WPM = 165           # read-aloud speed, for the estimated length
 MIN_WORDS = 120     # fewer words than this is only a teaser, not the post
 MAX_WORDS = 9000    # longer posts are read up to here
-SUM_WORDS = 650     # one summary paragraph per this many words
+SUM_WORDS = 550     # one summary paragraph per this many words
 DONE = {'done', 'listened', 'removed'}
 UA = {'User-Agent': 'Mozilla/5.0 (compatible; ListeningQueue/1.0; feed reader)', 'Accept': '*/*'}
 
@@ -324,6 +317,9 @@ def feeds(D):
     cur = load(f'{D}/config/blogs.json', {}) or {}
     subs = load(f'{D}/config/blogSubs.json', {}) or {}
     blogs = [b for b in (cur.get('list') or []) if isinstance(b, dict) and b.get('feed')]
+    if not blogs and not (subs.get('add') or []):
+        print('blogs: 0\nFEEDS UNCHANGED: nothing to write')
+        return
     resolved, errors = dict(cur.get('resolved') or {}), {}
     removed = {}
     for r in subs.get('remove') or []:
@@ -385,9 +381,20 @@ def feeds(D):
         if i not in items and norm(it.get('ch')) in live and p and (NOW - p).days < KEEP_DAYS:
             items[i] = it
     out = sorted(items.values(), key=lambda x: x.get('pub') or '')
-    json.dump({'items': out, 'updated': ISO(NOW)}, open(f'{D}/out/art.json', 'w'))
-    json.dump({'list': blogs, 'resolved': resolved, 'errors': errors, 'problems': problems, 'at': ISO(NOW)}, open(f'{D}/out/blogs.json', 'w'))
+    newb = {'list': blogs, 'resolved': resolved, 'errors': errors, 'problems': problems}
+    oldb = {k: cur.get(k) or ([] if k == 'list' else {}) for k in newb}
+    oldi = sorted(old.values(), key=lambda x: x.get('pub') or '')
+    changed = json.dumps(newb, sort_keys=True) != json.dumps(oldb, sort_keys=True) or json.dumps(out, sort_keys=True) != json.dumps(oldi, sort_keys=True)
+    for f in ('art', 'blogs'):
+        if os.path.exists(f'{D}/out/{f}.json'):
+            os.remove(f'{D}/out/{f}.json')
     print(f"blogs: {len(blogs)} ({len(fresh)} new) | posts listed: {len(out)} | lookups failed: {errors or 'none'} | feeds unreachable: {problems or 'none'}")
+    if changed:
+        json.dump({'items': out, 'updated': ISO(NOW)}, open(f'{D}/out/art.json', 'w'))
+        json.dump(dict(newb, at=ISO(NOW)), open(f'{D}/out/blogs.json', 'w'))
+        print(f'FEEDS CHANGED: write {D}/out/blogs.json to config/blogs and {D}/out/art.json to feed/art')
+    else:
+        print('FEEDS UNCHANGED: nothing to write')
 
 
 # ---------- which posts need audio ----------
@@ -423,18 +430,24 @@ def post_text(it, blogs):
     return out
 
 
-def prep(D):
-    for d in ('art', 'chunks', 'sum'):
+def full_id(iid):
+    return 'bf-' + iid[2:]
+
+
+def needs(D, have):
+    """Returns (need entries, state writes). A summary job is {id: 'b-..', kind: 'art'} with its text in
+    DIR/tx/<id>.json as [[estimated seconds, paragraph], ...]; a full read-aloud is {id: 'bf-..', kind: 'artf'} with
+    its text in DIR/art/<id>.json. A post that cannot be read gets DIR/tx/<id>.err."""
+    for d in ('art', 'tx'):
         os.makedirs(f'{D}/{d}', exist_ok=True)
     feedp = f'{D}/out/art.json' if os.path.exists(f'{D}/out/art.json') else f'{D}/feed/art.json'
-    items = {it['id']: it for it in (load(feedp, {}) or {}).get('items', [])}
+    items = {it['id']: it for it in (load(feedp, {}) or {}).get('items', []) if isinstance(it, dict) and it.get('id')}
     blogs = (load(f'{D}/out/blogs.json') or load(f'{D}/config/blogs.json', {}) or {}).get('list') or []
-    modes = dict((load(f'{D}/config/artMode.json', {}) or {}).get('ids') or {})
     st = {}
     for p in glob.glob(f'{D}/state/b-*.json'):
         v = load(p, {}) or {}
-        st[os.path.basename(p)[:-5]] = (v.get('s'), pdate(v.get('at')))
-    # Requests from the player: "s-<id>" (summarize instead) and "f-<id>" (read in full instead), last 3 days.
+        st[os.path.basename(p)[:-5]] = [v.get('s'), pdate(v.get('at')), v.get('m') or '']
+    # Requests from the player: "s-<id>" (summarize instead) and "f-<id>" (read in full instead), last 4 days.
     lj = load(f'{D}/loop.json', {}) or {}
     rows = lj.get('values', []) if isinstance(lj, dict) else (lj if isinstance(lj, list) else [])
     asked = {}
@@ -457,218 +470,59 @@ def prep(D):
             continue
         for kind, iid in reqs:
             asked.setdefault(iid, set()).add(kind)
-    swrites, mode_changed = [], False
+    swrites = []
     for iid, kinds in sorted(asked.items()):
-        s = st.get(iid, (None, None))[0]
+        s, at, m = st.get(iid, [None, None, ''])
         if iid not in items or s in DONE:
             continue
-        have = modes.get(iid, '')
-        want = 'b' if (kinds | set(have if have != 'b' else 'sf')) >= {'s', 'f'} else next(iter(kinds))
-        if want != have:
-            modes[iid] = want
-            mode_changed = True
-        doc = load(f'{D}/deep/{iid}.json', {}) or {}
-        missing = ('s' in kinds and not doc.get('p')) or ('f' in kinds and not doc.get('ft'))
-        if s != 'later' and missing:      # back to "being made" in the queue (also when it was already finished)
-            w = {'op': 'set', 'collection': 'state', 'doc_id': iid, 'data': {'s': 'later', 'at': NOW.strftime('%Y-%m-%dT%H:%M:%S.000Z')}}
+        got = set('sf' if m == 'b' else m) | kinds
+        want = 'b' if got >= {'s', 'f'} else next(iter(got))
+        missing = ('s' in kinds and iid not in have) or ('f' in kinds and full_id(iid) not in have)
+        if missing and (s != 'later' or want != m):   # back to "being made" in the queue (also when it was finished)
+            w = {'op': 'set', 'collection': 'state', 'doc_id': iid, 'data': {'s': 'later', 'at': NOW.strftime('%Y-%m-%dT%H:%M:%S.000Z'), 'm': want}}
             v = version(f'{D}/state/{iid}.json')
             if v:
                 w['if_version'] = v
             swrites.append(w)
-            st[iid] = ('later', NOW)
-    if mode_changed:
-        w = {'op': 'set', 'collection': 'config', 'doc_id': 'artMode', 'data': {'ids': modes, 'at': ISO(NOW)}}
-        v = version(f'{D}/config/artMode.json')
-        if v:
-            w['if_version'] = v
-        swrites.append(w)
-    json.dump(swrites, open(f'{D}/sbatch.json', 'w'))
-    need, jobs = [], []
+            st[iid] = ['later', NOW, want]
+    need = []
     for iid, it in items.items():
-        s, at = st.get(iid, (None, None))
+        s, at, m = st.get(iid, [None, None, ''])
         if s != 'later' or not at or (NOW - at).days >= 7:
             continue
-        mode = modes.get(iid) or 's'
-        doc = load(f'{D}/deep/{iid}.json', {}) or {}
-        dat = pdate(doc.get('at'))
-        if doc.get('err') and dat and (NOW - dat).total_seconds() < 6 * 3600:
-            continue                      # just failed: tried again later, for 3 days
-        if doc.get('err') and at and (NOW - at).days >= 3:
-            continue
-        ns = mode in ('s', 'b') and not doc.get('p')
-        nf = mode in ('f', 'b') and not doc.get('ft')
+        m = m or 's'
+        ns = m in ('s', 'b') and iid not in have
+        nf = m in ('f', 'b') and full_id(iid) not in have
         if not (ns or nf):
             continue
-        n = {'id': iid, 'title': it.get('title', ''), 'ch': it.get('ch', ''), 's': ns, 'f': nf}
+        base = {'title': it.get('title', ''), 'ch': it.get('ch', '')}
         try:
             paras = post_text(it, blogs)
-            if words(paras) < MIN_WORDS:
-                raise RuntimeError(f'only a preview is available ({words(paras)} words); the full post may be for subscribers')
-            json.dump({'paras': paras, 'words': words(paras)}, open(f'{D}/art/{iid}.json', 'w'))
-            n['words'] = words(paras)
+            n = words(paras)
+            if n < MIN_WORDS:
+                raise RuntimeError(f'only a preview could be read ({n} words); the full post may be for subscribers')
+            secs, t, rows = round(n / WPM * 60), 0.0, []
+            for x in paras:
+                rows.append([round(t), x])
+                t += len(x.split()) / WPM * 60
             if ns:
-                k = max(1, min(8, round(words(paras) / SUM_WORDS)))
-                open(f'{D}/chunks/{iid}.txt', 'w').write(f"TITLE: {n['title']}\nSOURCE: {n['ch']} (a written blog post)\nPARAGRAPHS WANTED: {k}\n\n" + '\n\n'.join(paras))
-                jobs.append({'id': iid, 'file': f'{D}/chunks/{iid}.txt', 'out': f'{D}/sum/{iid}.json', 'paragraphs': k, 'words': words(paras)})
+                # lqdeep.py chunks makes one summary paragraph per 7 minutes of "transcript": the times are
+                # stretched so a post gets one paragraph per SUM_WORDS words.
+                k = 420.0 / SUM_WORDS / (60.0 / WPM)
+                json.dump([[round(t0 * k), x] for t0, x in rows], open(f'{D}/tx/{iid}.json', 'w'))
+                need.append(dict(base, id=iid, kind='art', dur=round(secs * k)))
+            if nf:
+                intro = f"{base['title'].rstrip('.')}. From {base['ch']}."
+                json.dump({'p': [[0, intro]] + rows, 'words': n, 'dur': secs}, open(f'{D}/art/{full_id(iid)}.json', 'w'))
+                need.append(dict(base, id=full_id(iid), kind='artf', dur=secs))
         except Exception as e:
-            open(f'{D}/art/{iid}.err', 'w').write(str(e)[:200])
-        need.append(n)
-    json.dump(need, open(f'{D}/need.json', 'w'), indent=1)
-    json.dump(jobs, open(f'{D}/jobs.json', 'w'), indent=1)
-    bad = sum(1 for n in need if os.path.exists(f"{D}/art/{n['id']}.err"))
-    print(f"posts needing audio: {len(need)} ({sum(1 for n in need if n['f'])} in full, {len(jobs)} to summarize, {bad} could not be read) | "
-          f"player requests: {len(asked)} | state batch: {len(swrites)} writes in {D}/sbatch.json")
-    for j in jobs:
-        print(f"  summarize {j['id']}: {j['words']} words -> {j['paragraphs']} paragraphs, read {j['file']}, write {j['out']}")
-
-
-def finalize(D):
-    need = load(f'{D}/need.json', []) or []
-    writes, okf, oks, errs = [], 0, 0, []
-    now = ISO(NOW)
-    for n in need:
-        iid = n['id']
-        dp = f'{D}/deep/{iid}.json'
-        old = load(dp, {}) or {}
-        ver = version(dp) or (1 if os.path.exists(dp) else None)
-        data = {}
-        errp = f'{D}/art/{iid}.err'
-        if os.path.exists(errp):
-            reason = open(errp).read().strip()[:160]
-            errs.append(f'{iid}: {reason}')
-            if old.get('p') or old.get('ft'):
-                data = {('ferr' if n['f'] else 'serr'): reason}
-            else:
-                data = {'err': reason, 'at': now, 'src': 'art'}
-        else:
-            art = load(f'{D}/art/{iid}.json', {}) or {}
-            paras = art.get('paras') or []
-            est = round(min(art.get('words') or 0, MAX_WORDS) / WPM * 60)
-            if n['f'] and paras:
-                intro = f"{n['title'].rstrip('.')}. From {n['ch']}."
-                writes.append({'op': 'set', 'collection': 'atext', 'doc_id': iid, 'data': {'t': [intro] + paras, 'at': now}})
-                data.update({'ft': len(paras) + 1, 'fw': art.get('words') or 0, 'ferr': ''})
-                okf += 1
-            if n['s']:
-                try:
-                    sm = json.load(open(f'{D}/sum/{iid}.json'))
-                    if isinstance(sm, dict):
-                        sm = sm.get('paragraphs') or sm.get('p') or []
-                    sm = [re.sub(r'\s+', ' ', str(x)).strip() for x in sm if str(x).strip()]
-                    if not sm:
-                        raise ValueError('empty')
-                    data.update({'p': [[round(est * j / len(sm)), x] for j, x in enumerate(sm)], 'serr': ''})
-                    oks += 1
-                except Exception as e:
-                    errs.append(f'{iid}: no summary written ({str(e)[:60]})')
-            if data:
-                data.update({'at': now, 'src': 'art', 'err': '', 'dur': est})
-        if not data:
-            continue
-        w = {'op': 'update' if ver else 'set', 'collection': 'deep', 'doc_id': iid, 'data': data}
-        if ver:
-            w['if_version'] = ver
-        writes.append(w)
-    files = []
-    for b in range(0, len(writes), 30):
-        f = f'{D}/artbatch_{b // 30}.json'
-        json.dump(writes[b:b + 30], open(f, 'w'))
-        files.append(f)
-    print(f'full texts saved: {okf} | summaries saved: {oks} | problems: {errs or "none"} | batch files: {files or "none"}')
-
-
-def _batches(D):
-    return sorted(glob.glob(f'{D}/artbatch_*.json'))
-
-
-def stage(D):
-    """Lays the documents finalize is about to write out as local files under DIR/sp, so that
-    `lqdeep.py speak DIR/sp` can make their audio before anything is written to the database."""
-    for d in ('deep', 'atext'):
-        os.makedirs(f'{D}/sp/{d}', exist_ok=True)
-    n = 0
-    for bf in _batches(D):
-        for w in json.load(open(bf)):
-            iid, data = w['doc_id'], w.get('data') or {}
-            if w['collection'] == 'atext':
-                json.dump({'data': data, 'version': 1}, open(f'{D}/sp/atext/{iid}.json', 'w'))
-            elif w['collection'] == 'deep' and (data.get('p') or data.get('ft')):
-                old = dict(load(f'{D}/deep/{iid}.json', {}) or {})
-                if data.get('p'):       # a new summary needs new audio
-                    for k in ('sa', 'ss', 'sd'):
-                        old.pop(k, None)
-                old.update(data)
-                json.dump({'data': old, 'version': 1}, open(f'{D}/sp/deep/{iid}.json', 'w'))
-                n += 1
-    # A full text saved by an earlier run whose audio never got made: pick it up again.
-    for p in glob.glob(f'{D}/deep/b-*.json'):
-        iid = os.path.basename(p)[:-5]
-        doc = load(p, {}) or {}
-        if doc.get('ft') and not doc.get('fa') and not os.path.exists(f'{D}/sp/deep/{iid}.json') and os.path.exists(f'{D}/atext/{iid}.json'):
-            json.dump({'data': doc, 'version': version(p) or 1}, open(f'{D}/sp/deep/{iid}.json', 'w'))
-            json.dump({'data': load(f'{D}/atext/{iid}.json', {}), 'version': 1}, open(f'{D}/sp/atext/{iid}.json', 'w'))
-            n += 1
-    print(f'staged {n} posts for audio in {D}/sp')
-
-
-def publish(D, repo):
-    """Copies the new audio (DIR/sp/aout/*.mp3) into REPO/a/, writes each post's a/<id>.json for the player, and
-    folds the audio fields (sa, ss, sd, fa, fd) into the database writes in DIR/artbatch_*.json. Removes nothing."""
-    import shutil
-    dst = f'{repo}/a'
-    os.makedirs(dst, exist_ok=True)
-    audio = {}
-    for bf in sorted(glob.glob(f'{D}/sp/abatch_*.json')):
-        for w in json.load(open(bf)):
-            audio.setdefault(w['doc_id'], {}).update(w.get('data') or {})
-    n = 0
-    for p in glob.glob(f'{D}/sp/aout/*.mp3'):
-        shutil.copy(p, dst)
-        n += 1
-    files = _batches(D)
-    batches = [json.load(open(bf)) for bf in files]
-    seen = set()
-    for writes in batches:
-        for w in writes:
-            if w['collection'] == 'deep' and w['doc_id'] in audio:
-                w['data'].update(audio[w['doc_id']])
-                seen.add(w['doc_id'])
-    extra = []
-    for iid, data in audio.items():      # audio for a text saved by an earlier run
-        if iid not in seen:
-            w = {'op': 'update', 'collection': 'deep', 'doc_id': iid, 'data': data}
-            v = version(f'{D}/deep/{iid}.json')
-            if v:
-                w['if_version'] = v
-            extra.append(w)
-    if extra:
-        if not batches:
-            files.append(f'{D}/artbatch_0.json')
-            batches.append([])
-        batches[-1] += extra
-    for bf, writes in zip(files, batches):
-        json.dump(writes, open(bf, 'w'))
-    js = 0
-    for iid in audio:
-        doc = dict((load(f'{D}/sp/deep/{iid}.json', {}) or {}), **audio[iid])
-        jp = f'{dst}/{iid}.json'
-        out = load(jp, {}) or {}
-        out = out if isinstance(out, dict) else {}
-        out.pop('err', None)
-        if doc.get('p') and doc.get('sa') and os.path.exists(f'{dst}/{iid}.mp3'):
-            out.update({'sm': doc['p'], 'sa': doc['sa'], 'ss': doc.get('ss') or []})
-            out.pop('serr', None)
-        if doc.get('fa') and os.path.exists(f'{dst}/{iid}.full.mp3'):
-            out.update({'fa': doc['fa'], 'fd': doc.get('fd') or 0})
-            out.pop('ferr', None)
-        open(jp, 'w').write(json.dumps(out, separators=(',', ':')))
-        js += 1
-    print(f'copied {n} audio files, wrote {js} player files, audio fields added to {len(audio)} database writes: {files or "none"}')
+            for k, on in ((iid, ns), (full_id(iid), nf)):
+                if on:
+                    open(f'{D}/tx/{k}.err', 'w').write(str(e)[:200])
+                    need.append(dict(base, id=k, kind='art' if k == iid else 'artf', dur=0))
+    return need, swrites
 
 
 if __name__ == '__main__':
     cmd, D = sys.argv[1], sys.argv[2].rstrip('/')
-    if cmd == 'publish':
-        publish(D, sys.argv[3].rstrip('/'))
-    else:
-        {'feeds': feeds, 'prep': prep, 'finalize': finalize, 'stage': stage}[cmd](D)
+    {'feeds': feeds}[cmd](D)

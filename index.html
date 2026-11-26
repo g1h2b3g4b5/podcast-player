@@ -514,8 +514,8 @@ function askSummary(){
   else { wantPlay = false; au.pause(); srBtn(); $('st').textContent = 'Summary requested. Nothing else left in this list.'; }
 }
 $('sr').onclick = askSummary;
-// Read in full instead (articles only, ids "b-..."): sends "f-<id>" through the drop box. The queue's article task
-// makes the full read-aloud, and once a/<id>.json lists it (fa) the article comes back here in full, next in line.
+// Read in full instead (articles only, ids "b-..."): sends "f-<id>" through the drop box. The queue's summary task
+// makes the full read-aloud, and once a/bf-<hash>.json is on this site the article comes back here in full, next in line.
 const FR = ls.get('pp-freq', {});
 for (const k of Object.keys(FR)) if (Date.now() - FR[k] > 3 * 864e5) delete FR[k];
 ls.set('pp-freq', FR);
@@ -544,12 +544,13 @@ async function pollFull(){
   try {
     for (const id of ids) {
       let j = null;
-      try { const r = await fetch('a/' + encodeURIComponent(id) + '.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch (e) {}
-      if (!j || (!j.fa && !j.ferr)) continue;
+      // The full read-aloud of article b-<hash> is published as a/bf-<hash>.mp3, listed in a/bf-<hash>.json.
+      try { const r = await fetch('a/bf-' + encodeURIComponent(id.slice(2)) + '.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch (e) {}
+      if (!j || (!j.sa && !j.err)) continue;
       const k = Q.findIndex(q => q.id === id); if (k < 0) continue;
       const q = Q[k]; delete FR[id]; ls.set('pp-freq', FR);
-      if (!j.fa) { renderList(); $('st').textContent = 'Could not make the full read-aloud of “' + q.t + '”.'; continue; }
-      q.a = j.fa; q.d = j.fd || 0; sumMode[id] = 'ep'; ls.set('pp-sum', sumMode); H.delete(id); ls.set('pp-heard', [...H].slice(-400)); delete P[id]; ls.set('pp-posmap', P);
+      if (!j.sa) { renderList(); $('st').textContent = 'Could not make the full read-aloud of “' + q.t + '”.'; continue; }
+      q.a = j.sa; q.d = 0; sumMode[id] = 'ep'; ls.set('pp-sum', sumMode); H.delete(id); ls.set('pp-heard', [...H].slice(-400)); delete P[id]; ls.set('pp-posmap', P);
       if (k !== i) {   // put it right after what is playing now
         const cur = Q[i] && Q[i].id; Q.splice(k, 1); const c = Math.max(0, Q.findIndex(x => x.id === cur));
         Q.splice(Math.min(Q.length, c + 1), 0, q); i = Math.max(0, Q.findIndex(x => x.id === cur));
@@ -574,10 +575,9 @@ async function pollSummaries(){
       let j = null;
       try { const r = await fetch('a/' + encodeURIComponent(id) + '.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch (e) {}
       if (!j) continue;
-      if (!j.err && !j.serr && !Array.isArray(j.sm) && j.fa) continue;   // an article with only its full read-aloud so far: summary still coming
       const k = Q.findIndex(q => q.id === id); if (k < 0) continue;
       const q = Q[k]; delete SR[id]; ls.set('pp-sreq', SR);
-      if (j.err || j.serr || !Array.isArray(j.sm) || !j.sm.length) { renderList(); $('st').textContent = 'Could not summarize “' + q.t + '”.'; continue; }
+      if (j.err || !Array.isArray(j.sm) || !j.sm.length) { renderList(); $('st').textContent = 'Could not summarize “' + q.t + '”.'; continue; }
       q.sm = j.sm; q.sa = j.sa || ''; q.ss = Array.isArray(j.ss) ? j.ss : null;
       delete sumMode[id]; ls.set('pp-sum', sumMode); delete P['S:' + id]; ls.set('pp-posmap', P);
       if (k !== i) {   // put it right after what is playing now
