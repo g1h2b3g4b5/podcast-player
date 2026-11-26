@@ -673,6 +673,32 @@ def say_one(voice, iid, paras, outdir):
     return starts, round(t - GAP, 1), h
 
 
+def intro_for(D, iid, cache={}):
+    """'<title>, from <show or channel>.' spoken at the very start of each summary (Ryan, Nov 26 2026).
+    Title and source come from need.json, else from the feed lists. Empty when neither is known."""
+    if D not in cache:
+        m = {}
+        for k in ('podcasts', 'daily', 'wl', 'art'):
+            for it in (load(f'{D}/feed/{k}.json', {}) or {}).get('items', []):
+                m[it.get('id')] = (it.get('title') or '', it.get('ch') or '')
+        for n in load(f'{D}/need.json', []) or []:
+            if n.get('title') or n.get('ch'):
+                m[n.get('id')] = (n.get('title') or '', n.get('ch') or '')
+        cache[D] = m
+    t, ch = (re.sub(r'\s+', ' ', str(x)).strip() for x in cache[D].get(iid, ('', '')))
+    t = re.sub(r'\s*[|\u2022]\s*', ', ', t).strip(' ,')
+    if t and ch:
+        return f'{t}, from {ch}.'
+    return f'{t}.' if t else (f'From {ch}.' if ch else '')
+
+
+def with_intro(D, iid, paras):
+    """The first paragraph read with the title and source before it. The paragraph count and start
+    times stay the same, so segment 1's summary (and Play from here) still begins at 0 with the intro."""
+    i = intro_for(D, iid)
+    return [f'{i} {paras[0]}'] + paras[1:] if i and paras else paras
+
+
 def speak(D):
     """Turns summaries into real audio (DIR/aout/<id>.mp3, published in the player's repo under a/).
     New summaries: adds sa/ss/sd to the docs in DIR/batch_*.json. Older summaries in DIR/deep without audio:
@@ -687,7 +713,10 @@ def speak(D):
             if not p:
                 continue
             voice = voice or ensure_voice()
-            ss, sd, h = say_one(voice, w['doc_id'], [x for _, x in p], out)
+            paras = [x for _, x in p]
+            if not w['data'].get('full'):   # full read-alouds of blog posts get no intro
+                paras = with_intro(D, w['doc_id'], paras)
+            ss, sd, h = say_one(voice, w['doc_id'], paras, out)
             w['data'].update({'sa': f"a/{w['doc_id']}.mp3?v={h}", 'ss': ss, 'sd': sd})
             done += 1
         json.dump(writes, open(bf, 'w'))
@@ -700,7 +729,10 @@ def speak(D):
         if not doc.get('p') or doc.get('sa'):
             continue
         voice = voice or ensure_voice()
-        ss, sd, h = say_one(voice, iid, [x for _, x in doc['p']], out)
+        paras = [x for _, x in doc['p']]
+        if not doc.get('full'):
+            paras = with_intro(D, iid, paras)
+        ss, sd, h = say_one(voice, iid, paras, out)
         ups.append({'op': 'update', 'collection': 'deep', 'doc_id': iid, 'if_version': ver,
                     'data': {'sa': f'a/{iid}.mp3?v={h}', 'ss': ss, 'sd': sd}})
         done += 1
