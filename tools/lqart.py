@@ -308,6 +308,44 @@ def resolve(q):
     raise ValueError('no feed found at that address')
 
 
+ARCH_PAGES = 15     # older feed pages read per run when collecting a blog's whole archive
+ARCH_MAX = 150      # give up paging after this many pages
+
+
+def paged(feed, n):
+    """Page n of a WordPress-style feed (?paged=n); most blog software that pages its feed uses this."""
+    u = urllib.parse.urlsplit(feed)
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(u.query) if k != 'paged'] + [('paged', str(n))]
+    return urllib.parse.urlunsplit(u._replace(query=urllib.parse.urlencode(q)))
+
+
+def collect_archive(b, arch, ents):
+    """Adds the blog's posts to its archive record {posts: {id: [title, link, pub]}, page, done}: this run's first
+    feed page, then up to ARCH_PAGES older pages, picking up where the last run stopped."""
+    posts = arch.setdefault('posts', {})
+    for e in ents:
+        if e['pub']:
+            posts.setdefault(aid(e['link']), [e['title'][:200], e['link'], ISO(e['pub'])])
+    page = int(arch.get('page') or 1)
+    for _ in range(ARCH_PAGES):
+        if arch.get('done'):
+            break
+        page += 1
+        try:
+            raw, _, _ = get(paged(b['feed'], page))
+            more = [e for e in parse_feed(raw)[2] if e['pub']] if looks_like_feed(raw) else []
+        except Exception:
+            more = []
+        new = [e for e in more if aid(e['link']) not in posts]
+        if not new or page >= ARCH_MAX:
+            arch['done'] = True       # past the last page (or the feed does not page): this is the whole archive
+            break
+        for e in new:
+            posts[aid(e['link'])] = [e['title'][:200], e['link'], ISO(e['pub'])]
+        arch['page'] = page
+    return arch
+
+
 def aid(link):
     return 'b-' + hashlib.sha1(link.strip().encode()).hexdigest()[:14]
 
@@ -347,6 +385,18 @@ def feeds(D):
         except Exception as e:
             errors[q] = str(e)[:140]
     old = {it['id']: it for it in (load(f'{D}/feed/art.json', {}) or {}).get('items', []) if isinstance(it, dict) and it.get('id')}
+    # Blogs he is working through from the start (config/blogRules: backlog true): the whole archive is collected, and
+    # whenever none of that blog's posts is waiting in the queue, the oldest one he has not heard is added.
+    brules = (load(f'{D}/config/blogRules.json', {}) or {}).get('rules') or {}
+    wants_backlog = lambda b: bool((brules.get(norm(b['name'])) or {}).get('backlog'))
+    archive = {k: v for k, v in (cur.get('archive') or {}).items() if isinstance(v, dict)}
+    heard = {k: list(v) for k, v in (cur.get('heard') or {}).items()}
+    finished = dict(cur.get('backlogDone') or {})
+    fin = set()
+    for p in glob.glob(f'{D}/state/b-*.json'):
+        if ((load(p, {}) or {}).get('s')) in DONE | {'fin'}:
+            fin.add(os.path.basename(p)[:-5])
+    notes = []
     items, problems = {}, {}
     for b in blogs:
         try:
@@ -360,6 +410,11 @@ def feeds(D):
             continue
         ents = [e for e in ents if e['pub']]
         ents.sort(key=lambda e: e['pub'], reverse=True)
+        if wants_backlog(b):
+            try:
+                archive[b['name']] = collect_archive(b, archive.get(b['name']) or {}, ents)
+            except Exception as e:
+                problems[b['name']] = 'archive: ' + str(e)[:120]
         recent = [e for e in ents if (NOW - e['pub']).days < DAYS][:PER_BLOG]
         if norm(b['name']) in fresh and len(recent) < 3:
             recent = ents[:3]
@@ -376,13 +431,35 @@ def feeds(D):
                 it['dur'] = round(min(n, MAX_WORDS) / WPM * 60)
             items[it['id']] = it
     live = {norm(b['name']) for b in blogs}
-    for i, it in old.items():             # posts that left the feed stay a while
+    for i, it in old.items():             # posts that left the feed stay a while; a backlog post stays until he is done with it
         p = pdate(it.get('pub'))
-        if i not in items and norm(it.get('ch')) in live and p and (NOW - p).days < KEEP_DAYS:
+        if i not in items and norm(it.get('ch')) in live and ((it.get('bk') and i not in fin) or (not it.get('bk') and p and (NOW - p).days < KEEP_DAYS)):
             items[i] = it
+    for b in blogs:
+        name = b['name']
+        arch = archive.get(name)
+        if not wants_backlog(b) or not arch:
+            continue
+        posts = arch.get('posts') or {}
+        h = set(heard.get(name) or []) | {i for i in posts if i in fin}
+        heard[name] = sorted(h)
+        waiting = [i for i, it in items.items() if norm(it.get('ch')) == norm(name) and i not in fin]
+        left = sorted((i for i in posts if i not in h and i not in items), key=lambda i: posts[i][2])
+        if not waiting and left:
+            i = left[0]
+            t, link, pub = posts[i]
+            items[i] = {'id': i, 'title': t, 'ch': name, 'pub': pub, 'url': link, 'desc': 'From the older posts you are working through.', 'art': 1, 'bk': 1}
+            notes.append(f'backlog: queued "{t}" from {name} ({len(h)} of {len(posts)} heard)')
+        elif not waiting and not left and arch.get('done') and posts and name not in finished:
+            finished[name] = ISO(NOW)
+            notes.append(f'BACKLOG FINISHED: You have now been through every post on {name} ({len(posts)} posts).')
+    archive = {k: v for k, v in archive.items() if norm(k) in live}
+    heard = {k: v for k, v in heard.items() if norm(k) in live}
     out = sorted(items.values(), key=lambda x: x.get('pub') or '')
-    newb = {'list': blogs, 'resolved': resolved, 'errors': errors, 'problems': problems}
+    newb = {'list': blogs, 'resolved': resolved, 'errors': errors, 'problems': problems, 'archive': archive, 'heard': heard, 'backlogDone': finished}
     oldb = {k: cur.get(k) or ([] if k == 'list' else {}) for k in newb}
+    for n in notes:
+        print(n)
     oldi = sorted(old.values(), key=lambda x: x.get('pub') or '')
     changed = json.dumps(newb, sort_keys=True) != json.dumps(oldb, sort_keys=True) or json.dumps(out, sort_keys=True) != json.dumps(oldi, sort_keys=True)
     for f in ('art', 'blogs'):
