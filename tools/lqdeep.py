@@ -26,6 +26,13 @@ the summarizer returns {"segments": [{start, end, title, paragraphs}]}: the stre
 breaks, each with its own summary.  python3 -I lqdeep.py segcheck DIR ID  says whether that answer is usable.
 finalize stores them as deep/<id> = {p: [[startSecs, text], ...], sg: [[startSecs, endSecs, firstParagraph, title], ...]}
 so the player can switch between the original and the summary segment by segment.
+
+Lining up (Nov 26 2026): hosts that insert ads (Megaphone: Daily Wire shows) hand out a different file on every
+download, with ad breaks of other lengths, so times measured on the copy transcribed here do not fit the copy the
+player gets. The show's own audio is the same bytes in every copy. audio therefore keeps DIR/tx/<id>.fp (a few bytes
+of the file at every second) for segmented episodes, and finalize stores, per segment, fingerprints taken just after
+its start: deep/<id>.fp = {n: file size, b: bytes per second, k: [[[byte offset, hex], ...] per segment]}.
+publish copies fp into a/<id>.json; the player finds those bytes in its own copy and shifts the segment times.
 """
 import datetime as dt, glob, json, os, re, subprocess, sys, time, urllib.request
 
@@ -217,6 +224,80 @@ def ensure_whisper(D):
     subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--break-system-packages', 'faster-whisper', 'av<14'], check=True)
 
 
+MP3_KBPS = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
+MP3_HZ = [44100, 48000, 32000, 0]
+FP_AT, FP_LEN = 40, 16      # a fingerprint is 16 bytes taken 40 bytes into a frame (past its header and side info)
+FP_SECS = (1, 3, 6, 10, 15, 25, 40, 60)   # seconds after a segment's start where fingerprints are taken
+
+
+def fp_table(path):
+    """Fingerprints of an MP3 for lining up other copies of the same episode: for every whole second, the offset
+    (from the first audio frame) of the frame starting there and 16 bytes of it. Only for plain constant-bit-rate
+    MPEG-1 Layer III files, where seconds = bytes / bytes-per-second (the way browsers seek them); anything else
+    returns None and the player keeps the measured times."""
+    d = open(path, 'rb').read()
+    p = 0
+    if d[:3] == b'ID3' and len(d) > 10:
+        p = 10 + ((d[6] & 127) << 21 | (d[7] & 127) << 14 | (d[8] & 127) << 7 | (d[9] & 127)) + (10 if d[5] & 16 else 0)
+
+    def head(q):
+        if q + 4 > len(d) or d[q] != 0xFF or (d[q + 1] & 0xFE) not in (0xFA,):   # MPEG-1 Layer III, with or without CRC
+            return None
+        bi, si = d[q + 2] >> 4, (d[q + 2] >> 2) & 3
+        if not 0 < bi < 15 or si == 3:
+            return None
+        return MP3_KBPS[bi], MP3_HZ[si], (d[q + 2] >> 1) & 1
+
+    lim = min(len(d), p + 65536)
+    while p < lim and not head(p):
+        p += 1
+    h0 = head(p)
+    if not h0:
+        return None
+    kbps, hz = h0[0], h0[1]
+    bps, fd = kbps * 125, 1152 / hz
+    rows, q, nf, nxt = [], p, 0, 0
+    while True:
+        h = head(q)
+        if not h:
+            break
+        if h[0] != kbps or h[1] != hz:
+            return None          # the bit rate changes inside the file: byte offsets would not be times
+        if nf * fd >= nxt:
+            sig = d[q + FP_AT:q + FP_AT + FP_LEN]
+            rows.append([q - p, sig.hex() if len(sig) == FP_LEN and len(set(sig)) >= 8 else ''])
+            nxt += 1
+        q += 144000 * kbps // hz + h[2]
+        nf += 1
+    if len(d) - q > 4096 or nf < 100:      # stopped well before the end: not one clean run of frames
+        return None
+    if abs(nf * fd - (q - p) / bps) > 0.5:
+        return None
+    return {'n': len(d), 'b': bps, 't': rows}
+
+
+def seg_fp(D, iid, segs, ends):
+    """Fingerprints for each segment of an episode: [[byte offset, hex], ...] taken 1 to 60 seconds after its start
+    and before its own content ends (the ads at its tail differ from copy to copy). None when there is no table."""
+    try:
+        tab = json.load(open(f'{D}/tx/{iid}.fp'))
+        rows = tab['t']
+    except Exception:
+        return None
+    out = []
+    for (st, en, _, _), cend in zip(segs, ends):
+        stop = min(en, cend if cend > st + 5 else en) - 1
+        got = []
+        for a in FP_SECS:
+            s = int(-(-st // 1)) + a
+            if s < stop and s < len(rows) and rows[s][1]:
+                got.append(rows[s])
+        out.append(got)
+    if not any(out):
+        return None
+    return {'n': tab['n'], 'b': tab['b'], 'k': out}
+
+
 def audio(D):
     os.makedirs(f'{D}/tx', exist_ok=True)
     open(f'{D}/audio.log', 'w').close()
@@ -247,6 +328,14 @@ def audio(D):
                         if not b:
                             break
                         f.write(b)
+                if n.get('seg'):     # segmented show: keep fingerprints so the player can line its own copy up
+                    try:
+                        tab = fp_table(mp3)
+                        if tab:
+                            json.dump(tab, open(f"{D}/tx/{n['id']}.fp", 'w'), separators=(',', ':'))
+                        log(D, f"fingerprints {n['id']}: " + (f"{len(tab['t'])} s" if tab else 'none (not a plain constant-bit-rate MP3)'))
+                    except Exception as e:
+                        log(D, f"fingerprints {n['id']} failed: {str(e)[:120]}")
                 # Long recordings are transcribed in pieces: whisper builds its features for
                 # the whole input at once, and a 3 hour file runs the sandbox out of memory.
                 from faster_whisper import decode_audio
@@ -344,9 +433,10 @@ def seg_len(D, iid, rows, n):
     return max(real, last + 5) if real else max(float(n.get('dur') or 0), last + 5)
 
 
-def read_seg(D, iid, n):
+def read_seg(D, iid, n, ends=None):
     """Reads the summarizer's answer for a segmented episode. Returns [(start, end, title, [paragraphs]), ...],
-    cleaned so segments are in order, inside the episode and never overlap. Raises ValueError when unusable."""
+    cleaned so segments are in order, inside the episode and never overlap. Raises ValueError when unusable.
+    ends, when given, is filled with where each segment's own content stops (before the ads at its tail)."""
     rows = json.load(open(f'{D}/tx/{iid}.json'))
     total = seg_len(D, iid, rows, n)
     last = max((r[0] for r in rows), default=0)
@@ -381,6 +471,8 @@ def read_seg(D, iid, n):
     # The last segment always runs to the end of the audio (Ryan, Nov 20 2026): the summarizer sometimes ends it at
     # the last ad break although show content follows (Ben Shapiro, Nov 20: cut at 58:04 of 64:33, just as the ICC
     # story began), so the player moved on early. Trailing ads or an outro become that segment's tail instead.
+    if ends is not None:
+        ends[:] = [en for _, en, _, _ in out]
     out = [(st, out[k + 1][0] if k < len(out) - 1 else total, title, paras)
            for k, (st, en, title, paras) in enumerate(out)]
     covered = sum(en - st for st, en, _, _ in out)
@@ -452,11 +544,15 @@ def finalize(D):
         doc = None
         if n.get('seg') and os.path.exists(sp):
             try:
-                p, sg = [], []
-                for st, en, title, paras in read_seg(D, iid, n):
+                p, sg, ends = [], [], []
+                segs = read_seg(D, iid, n, ends)
+                for st, en, title, paras in segs:
                     sg.append([st, en, len(p), title])
                     p += [[round(st + (en - st) * j / len(paras)), x] for j, x in enumerate(paras)]
                 doc = {'p': p, 'sg': sg, 'at': now, 'src': n['kind'], 'dur': n.get('dur') or 0}
+                fp = seg_fp(D, iid, segs, ends)
+                if fp:
+                    doc['fp'] = fp
                 okn += 1
             except Exception as e:
                 # Segments unusable: keep whatever paragraphs there are as an ordinary summary.
@@ -647,6 +743,8 @@ def publish(D, repo):
             out = {'sm': doc['p'], 'sa': doc['sa'], 'ss': doc.get('ss') or []}
             if doc.get('sg'):
                 out['sg'] = doc['sg']
+                if doc.get('fp'):
+                    out['fp'] = doc['fp']
         elif doc.get('err') and not doc.get('p') and at and (NOW - at).days < 3:
             out = {'err': str(doc['err'])[:200]}
         if out is not None:

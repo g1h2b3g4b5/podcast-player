@@ -154,6 +154,10 @@ let pastEnd = 0, rate = +ls.get('pp-rate', 1) || 1, H = new Set(ls.get('pp-heard
 let P = ls.get('pp-posmap', {});
 const SG = ls.get('pp-seg', {});   // id -> { k: segment playing, m: {seg: 'o'|'s'}, o: {seg: place in original}, s: {seg: place in summary} }
 let inSeg = false, segK = 0, segV = 'o';
+Q.forEach(q => { if (q.sg0) { q.sg = q.sg0; delete q.sg0; } });
+// Lined-up copies of segmented episodes (see "Lining up" below): FX[id] = { url, sg } lined up, or { off: 1 } play as before.
+const FX = {}, fxJob = {}, fxPct = {}, AC = 'pp-audio';
+let fxWait = null;   // id of the episode whose original is waiting for its copy
 let sumOpen = ls.get('pp-sumopen', false) === true;   // summary text is collapsed unless opened
 const WO = new Set(ls.get('pp-wo', []));
 const savedPos = ls.get('pp-pos', null);
@@ -202,7 +206,7 @@ async function flush(){
   } catch (e) {} finally { flushing = false; mark(); }
 }
 addEventListener('online', flush);
-function heard(){ const q = Q[i]; if (q && q.id && (inSA || inSum) && sumMode[q.id] !== 'ep') { sumMode[q.id] = 'sd'; ls.set('pp-sum', sumMode); delete P['S:' + q.id]; ls.set('pp-posmap', P); } if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); mark(); }
+function heard(){ const q = Q[i]; if (q && q.id && (inSA || inSum) && sumMode[q.id] !== 'ep') { sumMode[q.id] = 'sd'; ls.set('pp-sum', sumMode); delete P['S:' + q.id]; ls.set('pp-posmap', P); } if (!q || !q.id || H.has(q.id)) return; delete P[q.id]; ls.set('pp-posmap', P); H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); mark(); fxPrune(); }
 function mark(){
   $('rt').textContent = (inSum || inSA || segS()) ? 'voice ' + vrate.toFixed(1) + '×' : rate + '×';
   [...$('list').children].forEach((li, k) => { li.classList.toggle('cur', k === i); li.classList.toggle('fin', H.has(Q[k].id)); });
@@ -211,6 +215,7 @@ function mark(){
   $('cp').hidden = !(cfg && ob.length); $('cp').textContent = ob.length + ' finished, waiting to sync to your queue';
   if (typeof srBtn === 'function') try { srBtn(); } catch (e) {}
   if (typeof frBtn === 'function') try { frBtn(); } catch (e) {}
+  if (typeof fxShow === 'function') try { fxShow(); } catch (e) {}
 }
 function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
 // Summaries have their own reading speed (0.5x to 2x). A change picks up from the last word spoken, not the paragraph start.
@@ -219,7 +224,7 @@ function setVRate(r){ vrate = Math.round(Math.max(0.5, Math.min(2, r)) * 10) / 1
 const sk = n => { const d = au.duration || 1e9; au.currentTime = Math.max(0, Math.min(d - 1, au.currentTime + n)); };
 function load(k, go, t){
   i = k; const q = Q[i]; if (!q) return;
-  stopSum(); inSA = false; inSeg = false; $('segbox').hidden = true; $('segl').hidden = true; $('drive').classList.remove('seg'); $('seek').min = 0;
+  stopSum(); inSA = false; inSeg = false; fxWait = null; $('segbox').hidden = true; $('segl').hidden = true; $('drive').classList.remove('seg'); $('seek').min = 0;
   if (isSeg(q)) { loadSeg(q, go); return; }
   if (useSA(q)) { loadSA(q, go, t); return; }
   if (useSummary(q) && synth) { enterSum(go); return; }
@@ -267,12 +272,13 @@ function broken(){ return !!au.error || au.networkState === 3 || !au.currentSrc;
 function recover(){
   const q = Q[i]; if (!q) return;
   startAt = lastGood || au.currentTime || startAt || 0;
-  au.removeAttribute('src'); au.load(); au.src = (inSA || segS()) ? q.sa : q.a; au.playbackRate = curRate();
+  au.removeAttribute('src'); au.load(); au.src = (inSA || segS()) ? q.sa : oSrc(q); au.playbackRate = curRate();
   if (wantPlay) au.play().catch(() => {});
 }
 let pausedAt = 0, kickTimer = null;
 function playNow(){
   if (!Q.length) return; wantPlay = true;
+  if (fxWait) { $('play').textContent = '❚❚'; fxShow(); return; }   // starts by itself once the episode is lined up
   // After a long pause Android may have frozen the page or the stream link may be stale, so reload at the saved spot.
   const stale = pausedAt && Date.now() - pausedAt > 90000;
   if (broken() || stale) { tries = 0; $('st').classList.remove('err'); $('st').textContent = 'Reconnecting…'; pausedAt = 0; recover(); kick(); return; }
@@ -287,10 +293,10 @@ function kick(){
     if (wantPlay && (au.paused || au.readyState < 3)) { recover(); }
   }, 6000);
 }
-$('play').onclick = () => { if (!Q.length) return; if (inSum) { speaking ? pauseSum() : resumeSum(); return; } au.paused ? playNow() : (wantPlay = false, au.pause()); };
+$('play').onclick = () => { if (!Q.length) return; if (fxWait) { wantPlay = !wantPlay; $('play').textContent = wantPlay ? '❚❚' : '▶'; fxShow(); return; } if (inSum) { speaking ? pauseSum() : resumeSum(); return; } au.paused ? playNow() : (wantPlay = false, au.pause()); };
 function finishNext(){
   const q = Q[i]; if (!q) return;
-  if (q.id && !H.has(q.id)) { H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); }
+  if (q.id && !H.has(q.id)) { H.add(q.id); ls.set('pp-heard', [...H].slice(-400)); if (!WO.has(q.id)) outboxAdd(q.id); fxPrune(); }
   let k = i + 1; while (k < Q.length && H.has(Q[k].id)) k++;
   if (k < Q.length) { load(k, true); window.scrollTo(0, 0); }
   else { au.pause(); mark(); $('st').textContent = 'All done. Every episode in this list is finished.'; }
@@ -302,8 +308,8 @@ $('back').onclick = () => inSeg ? sk(segV === 's' ? -10 : -30) : inSum ? jumpPar
 $('seek').oninput = e => { if (inSum) { scrubbing = true; scrubTo(+e.target.value, false); return; } au.currentTime = (inSeg ? segBase() : 0) + +e.target.value; };
 $('seek').onchange = e => { if (inSum) { scrubbing = false; scrubTo(+e.target.value, true); } };
 au.onplay = () => { au.playbackRate = curRate(); $('play').textContent = '❚❚'; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} };
-au.onplaying = () => { clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
-au.onpause = () => { $('play').textContent = '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
+au.onplaying = () => { fxAhead(); clearTimeout(kickTimer); pausedAt = 0; if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch (e) {} tries = 0; $('st').classList.remove('err'); if ($('st').textContent === 'Reconnecting…') mark(); };
+au.onpause = () => { $('play').textContent = fxWait && wantPlay ? '❚❚' : '▶'; pausedAt = Date.now(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused'; } catch (e) {} if (!au.error) savePos(); };
 // Moving on at the end: 'ended' is the normal signal, but streams with inserted ads often break off
 // in the last moments (an error or a stall instead of 'ended'), so those count as the end too.
 let advancing = false, lastT = -1, stuckSince = 0;
@@ -600,6 +606,118 @@ $('sumhd').onclick = () => { sumOpen = !sumOpen; ls.set('pp-sumopen', sumOpen); 
 $('full').onclick = () => toEpisode(false);
 $('here').onclick = () => toEpisode(true);
 if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = () => {};
+// ---- Lining up segmented episodes. Hosts that insert ads (Megaphone) hand out a different file on every download,
+// with ad breaks of other lengths, so the segment times measured by the summary run do not fit the copy this phone
+// gets. The show's own audio is the same bytes in every copy, so the run publishes a few bytes found just after each
+// segment's start (a/<id>.json: fp). Here the episode is fetched once, kept on the phone until it is finished, those
+// bytes are found in it, the segment times are shifted to match, and the original plays from that same copy.
+// Anything that goes wrong (no fingerprints, a host that does not allow fetching, no signal) plays as before.
+const oSrc = q => (inSeg && FX[q.id] && FX[q.id].url) || q.a;
+const fxKey = id => new URL('o/' + encodeURIComponent(id), location.href).href;
+/*LINEUP*/
+const fxHex = h => Uint8Array.from(h.match(/../g) || [], x => parseInt(x, 16));
+function fxFind(u, sig, from){   // first place at or after `from` where the bytes of sig occur in u, or -1
+  const n = sig.length, last = u.length - n;
+  for (let p = u.indexOf(sig[0], from); p >= 0 && p <= last; p = u.indexOf(sig[0], p + 1)) {
+    let k = 1; while (k < n && u[p + k] === sig[k]) k++;
+    if (k === n) return p;
+  }
+  return -1;
+}
+// blob: this phone's copy. fp: { b: bytes per second, k: [[[offset in the measured copy, hex], ...] per segment] }.
+// sg: the measured segments. Returns { sg: the segments as they lie in this copy, hits } or null when nothing fits.
+async function lineUp(blob, fp, sg){
+  const N = blob.size, B = fp.b, hd = new Uint8Array(await blob.slice(0, 10).arrayBuffer());
+  let d0 = 0;
+  if (hd[0] === 0x49 && hd[1] === 0x44 && hd[2] === 0x33) d0 = 10 + ((hd[6] & 127) << 21 | (hd[7] & 127) << 14 | (hd[8] & 127) << 7 | (hd[9] & 127)) + ((hd[5] & 16) ? 10 : 0);
+  const fr = new Uint8Array(await blob.slice(d0, d0 + 65536).arrayBuffer());
+  let a = 0; while (a < fr.length - 1 && !(fr[a] === 0xFF && (fr[a + 1] & 0xFE) === 0xFA)) a++;
+  if (a >= fr.length - 1) return null;
+  d0 += a;
+  const pair = found => {   // found: [[offset, byte shift], ...]; the earliest two that agree
+    found.sort((x, y) => x[0] - y[0]);
+    for (let x = 0; x < found.length; x++) for (let y = x + 1; y < found.length; y++) if (Math.abs(found[x][1] - found[y][1]) < B * 0.2) return found[x][1];
+    return null;
+  };
+  const scan = async (sigs, lo, hi) => {
+    const found = [], CH = 8 << 20;
+    for (let o = Math.max(0, lo); o < Math.min(N, hi); o += CH) {
+      const u = new Uint8Array(await blob.slice(o, Math.min(N, o + CH + 64)).arrayBuffer());
+      for (const [pos, sig] of sigs) { const p = fxFind(u, sig, 0); if (p >= 0 && p < CH) found.push([pos, o + p - d0 - pos]); }
+      const got = pair(found); if (got != null) return got;
+    }
+    return found.length ? found[0][1] : null;   // only one found (or none agree): take the earliest
+  };
+  const shifts = []; let prev = 0, hits = 0;
+  for (let k = 0; k < sg.length; k++) {
+    const sigs = (fp.k[k] || []).filter(x => Array.isArray(x) && x[1] && x[1].length >= 16).map(x => [x[0], fxHex(x[1])]);
+    let sh = null;
+    if (sigs.length) {
+      const c = d0 + sigs[0][0] + prev, W = B * 300;
+      sh = await scan(sigs, c - W, d0 + sigs[sigs.length - 1][0] + prev + W);
+      if (sh == null) sh = await scan(sigs, 0, N);
+    }
+    if (sh != null) { hits++; prev = sh; }
+    shifts.push(sh);
+  }
+  if (!hits) return null;
+  for (let k = 0; k < shifts.length; k++) if (shifts[k] == null) { let j = k - 1; while (j >= 0 && shifts[j] == null) j--; if (j < 0) { j = k + 1; while (shifts[j] == null) j++; } shifts[k] = shifts[j]; }
+  const st = sg.map((g, k) => Math.max(0, Math.round((g[0] + shifts[k] / B) * 10) / 10)), end = Math.round((N - d0) / B * 10) / 10;
+  const out = sg.map((g, k) => [st[k], k < sg.length - 1 ? st[k + 1] : end, g[2], g[3]]);
+  if (out.some(g => !(g[1] - g[0] > 5))) return null;
+  return { sg: out, hits };
+}
+/*LINEUP*/
+async function fxGet(q){
+  const id = q.id, base = q.sg0 || q.sg;
+  let j = null; try { const r = await fetch('a/' + encodeURIComponent(id) + '.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch (e) {}
+  const fp = j && j.fp;
+  if (!fp || !(fp.b > 0) || !Array.isArray(fp.k) || fp.k.length !== base.length || !Array.isArray(j.sg) || j.sg.length !== base.length || j.sg.some((g, k) => Math.abs(g[0] - base[k][0]) > 0.5)) return { off: 1 };
+  let blob = null, cache = null;
+  try { cache = await caches.open(AC); const hit = await cache.match(fxKey(id)); if (hit) blob = await hit.blob(); } catch (e) {}
+  if (blob && blob.size < 10000) blob = null;
+  if (!blob) {
+    const ctl = new AbortController(); let last = Date.now();
+    const watch = setInterval(() => { if (Date.now() - last > 25000) ctl.abort(); }, 5000);   // no bytes for 25 s: give up
+    try {
+      const r = await fetch(q.a, { signal: ctl.signal, cache: 'no-store', referrerPolicy: 'no-referrer' });
+      if (!r.ok || !r.body) throw new Error('no audio');
+      const len = +r.headers.get('content-length') || 0;
+      if (len && len === fp.n) { ctl.abort(); return { off: 1 }; }   // the very file the run measured: its times fit as they are
+      const rd = r.body.getReader(); let parts = [], held = 0, got = 0; blob = new Blob([], { type: 'audio/mpeg' });
+      for (;;) {
+        const { done, value } = await rd.read(); if (done) break;
+        parts.push(value); held += value.length; got += value.length; last = Date.now();
+        if (held > 4e6) { blob = new Blob([blob, ...parts], { type: 'audio/mpeg' }); parts = []; held = 0; }
+        const pc = len ? Math.min(99, Math.floor(got / len * 100)) : 0; if (pc !== fxPct[id]) { fxPct[id] = pc; fxShow(); }
+      }
+      blob = new Blob([blob, ...parts], { type: 'audio/mpeg' });
+      if (len && blob.size !== len) throw new Error('cut short');
+    } finally { clearInterval(watch); }
+    try { if (cache) await cache.put(fxKey(id), new Response(blob, { headers: { 'content-type': 'audio/mpeg' } })); } catch (e) {}
+  }
+  const al = await lineUp(blob, fp, base);
+  if (!al) return { off: 1 };
+  return { url: URL.createObjectURL(blob), sg: al.sg };
+}
+function fxEnsure(q){
+  const id = q.id; if (FX[id]) return Promise.resolve(FX[id]);
+  if (!fxJob[id]) fxJob[id] = fxGet(q).catch(() => ({ off: 1 })).then(x => {
+    FX[id] = x; delete fxJob[id]; delete fxPct[id];
+    if (x.url) { if (!q.sg0) q.sg0 = q.sg; q.sg = x.sg; if (Q[i] === q && inSeg) segUI(); }
+    return x;
+  });
+  return fxJob[id];
+}
+function fxShow(){ if (!fxWait) return; const pc = fxPct[fxWait]; $('st').classList.remove('err'); $('st').textContent = 'Getting this episode ready' + (pc ? ' (' + pc + '%)' : '') + (wantPlay ? '…' : '. Tap ▶ to play when it is.'); }
+// While something plays, fetch the next unfinished segmented episode so it starts without a wait.
+function fxAhead(){
+  if (!navigator.onLine) return;
+  for (let k = i + 1; k < Q.length; k++) { const q = Q[k]; if (q.id && H.has(q.id)) continue; if (isSeg(q) && !FX[q.id] && q.sg.some((x, n) => segMode(q, n) === 'o')) fxEnsure(q); break; }
+}
+// Kept copies are dropped once their episode is finished or no longer in the list.
+async function fxPrune(){ try { const c = await caches.open(AC); for (const r of await c.keys()) { const id = decodeURIComponent(r.url.split('/o/').pop() || ''); if (!Q.some(q => q.id === id && !H.has(q.id))) await c.delete(r); } } catch (e) {} }
+fxPrune();
 // ---- Segmented episodes. The queue sends, for shows with Segments on, where each segment of the episode starts and
 // ends (the ad breaks between them are skipped) and where that segment's part of the summary recording begins. Each
 // segment plays either as the original or as its summary; the big button switches the one playing, and the list below
@@ -607,7 +725,7 @@ if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = () => 
 function isSeg(q){ return !!(q && q.a && q.sa && Array.isArray(q.sg) && q.sg.length && Array.isArray(q.ss) && q.ss.length && !saFail.has(q.id) && q.sg.every(g => Array.isArray(g) && g[1] > g[0] && g[2] >= 0 && g[2] < q.ss.length)); }
 function segS(){ return inSeg && segV === 's'; }
 function curRate(){ return (inSA || segS()) ? vrate : rate; }
-function segSt(q){ const st = SG[q.id] = SG[q.id] || {}; st.m = st.m || {}; st.o = st.o || {}; st.s = st.s || {}; return st; }
+function segSt(q){ const st = SG[q.id] = SG[q.id] || {}; st.m = st.m || {}; st.o = st.o || {}; st.s = st.s || {}; st.b = st.b || {}; return st; }
 function segMode(q, k){ const st = SG[q.id]; return (st && st.m && st.m[k]) || ((q.gf && k === 0) ? 'o' : q.gd === 's' ? 's' : 'o'); }
 function saveSeg(){ const ks = Object.keys(SG); if (ks.length > 120) ks.slice(0, ks.length - 120).forEach(x => delete SG[x]); ls.set('pp-seg', SG); }
 // Where segment k's summary starts and stops inside the summary recording (it stops just short of the next one).
@@ -625,9 +743,17 @@ function segStart(go){
   const q = Q[i], st = segSt(q), g = q.sg[segK]; st.k = segK; saveSeg();
   segV = segMode(q, segK);
   clearTimeout(retryTimer); tries = 0; pastEnd = 0; wantPlay = !!go; $('st').classList.remove('err');
+  // The original plays from this phone's own lined-up copy of the episode; until that is ready, wait (see fxGet).
+  if (segV !== 's' && !FX[q.id]) {
+    fxWait = q.id; if (!au.paused) au.pause(); $('play').textContent = wantPlay ? '❚❚' : '▶';
+    fxEnsure(q).then(() => { if (fxWait === q.id && Q[i] === q && inSeg) { fxWait = null; segStart(wantPlay); } });
+    segUI(); mark(); return;
+  }
+  fxWait = null;
+  if (segV === 's' && !FX[q.id] && q.sg.some((x, n) => segMode(q, n) === 'o')) fxEnsure(q);   // a later segment will need it
   let t, src;
   if (segV === 's') { const [a, b] = segSum(q, segK), sv = st.s[segK] || 0; t = sv > a && sv < b - 1 ? sv : a; src = q.sa; }
-  else { const sv = st.o[segK] || 0; t = sv > g[0] && sv < g[1] - 2 ? sv : g[0]; src = q.a; }
+  else { let sv = st.o[segK] || 0; if (sv && st.b[segK] != null) sv += g[0] - st.b[segK]; t = sv > g[0] && sv < g[1] - 2 ? sv : g[0]; src = oSrc(q); }
   lastGood = t;
   if (au.getAttribute('src') === src && au.readyState >= 1 && !au.error) { startAt = 0; if (Math.abs(au.currentTime - t) > 0.4) au.currentTime = t; }
   else { startAt = t; au.src = src; }
@@ -665,7 +791,7 @@ function segTick(){
       if (j >= 0 && j !== segK && segMode(q, j) === 'o') { segK = j; st.k = j; saveSeg(); segUI(); mark(); } else au.currentTime = g[0];
       return;
     }
-    st.o[segK] = t; pos = t - g[0];
+    st.o[segK] = t; st.b[segK] = g[0]; pos = t - g[0];
   }
   $('seek').value = Math.floor(Math.max(0, pos)); $('pos').textContent = f(Math.max(0, pos));
   // Finished = the last segment heard to 90% by actually listening (same rule as ordinary episodes).
