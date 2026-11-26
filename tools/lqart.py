@@ -15,6 +15,9 @@ Run by the "Listening Queue articles" scheduled task, which downloads the queue'
   python3 -I lqart.py finalize DIR
       Reads DIR/sum/<id>.json (a JSON array of summary paragraphs) and writes DIR/artbatch_<n>.json: the
       ArtifactData batch writes for deep/<id> and atext/<id>.
+  python3 -I lqart.py stage DIR ; python3 -I lqdeep.py speak DIR/sp ; python3 -I lqart.py publish DIR REPO
+      Makes the audio for those documents before they are written (stage lays them out under DIR/sp, speak reads
+      them aloud, publish copies the audio into REPO/a/ and adds the audio fields to the artbatch writes).
 
 deep/<id> for a post: {src: 'art', at, p: [[secs, text], ...] (summary), ft: paragraph count of the full text
 (the text itself is atext/<id> = {t: [...]}), err / serr / ferr}. The audio publisher (lqdeep.py speak) then adds
@@ -574,6 +577,98 @@ def finalize(D):
     print(f'full texts saved: {okf} | summaries saved: {oks} | problems: {errs or "none"} | batch files: {files or "none"}')
 
 
+def _batches(D):
+    return sorted(glob.glob(f'{D}/artbatch_*.json'))
+
+
+def stage(D):
+    """Lays the documents finalize is about to write out as local files under DIR/sp, so that
+    `lqdeep.py speak DIR/sp` can make their audio before anything is written to the database."""
+    for d in ('deep', 'atext'):
+        os.makedirs(f'{D}/sp/{d}', exist_ok=True)
+    n = 0
+    for bf in _batches(D):
+        for w in json.load(open(bf)):
+            iid, data = w['doc_id'], w.get('data') or {}
+            if w['collection'] == 'atext':
+                json.dump({'data': data, 'version': 1}, open(f'{D}/sp/atext/{iid}.json', 'w'))
+            elif w['collection'] == 'deep' and (data.get('p') or data.get('ft')):
+                old = dict(load(f'{D}/deep/{iid}.json', {}) or {})
+                if data.get('p'):       # a new summary needs new audio
+                    for k in ('sa', 'ss', 'sd'):
+                        old.pop(k, None)
+                old.update(data)
+                json.dump({'data': old, 'version': 1}, open(f'{D}/sp/deep/{iid}.json', 'w'))
+                n += 1
+    # A full text saved by an earlier run whose audio never got made: pick it up again.
+    for p in glob.glob(f'{D}/deep/b-*.json'):
+        iid = os.path.basename(p)[:-5]
+        doc = load(p, {}) or {}
+        if doc.get('ft') and not doc.get('fa') and not os.path.exists(f'{D}/sp/deep/{iid}.json') and os.path.exists(f'{D}/atext/{iid}.json'):
+            json.dump({'data': doc, 'version': version(p) or 1}, open(f'{D}/sp/deep/{iid}.json', 'w'))
+            json.dump({'data': load(f'{D}/atext/{iid}.json', {}), 'version': 1}, open(f'{D}/sp/atext/{iid}.json', 'w'))
+            n += 1
+    print(f'staged {n} posts for audio in {D}/sp')
+
+
+def publish(D, repo):
+    """Copies the new audio (DIR/sp/aout/*.mp3) into REPO/a/, writes each post's a/<id>.json for the player, and
+    folds the audio fields (sa, ss, sd, fa, fd) into the database writes in DIR/artbatch_*.json. Removes nothing."""
+    import shutil
+    dst = f'{repo}/a'
+    os.makedirs(dst, exist_ok=True)
+    audio = {}
+    for bf in sorted(glob.glob(f'{D}/sp/abatch_*.json')):
+        for w in json.load(open(bf)):
+            audio.setdefault(w['doc_id'], {}).update(w.get('data') or {})
+    n = 0
+    for p in glob.glob(f'{D}/sp/aout/*.mp3'):
+        shutil.copy(p, dst)
+        n += 1
+    files = _batches(D)
+    batches = [json.load(open(bf)) for bf in files]
+    seen = set()
+    for writes in batches:
+        for w in writes:
+            if w['collection'] == 'deep' and w['doc_id'] in audio:
+                w['data'].update(audio[w['doc_id']])
+                seen.add(w['doc_id'])
+    extra = []
+    for iid, data in audio.items():      # audio for a text saved by an earlier run
+        if iid not in seen:
+            w = {'op': 'update', 'collection': 'deep', 'doc_id': iid, 'data': data}
+            v = version(f'{D}/deep/{iid}.json')
+            if v:
+                w['if_version'] = v
+            extra.append(w)
+    if extra:
+        if not batches:
+            files.append(f'{D}/artbatch_0.json')
+            batches.append([])
+        batches[-1] += extra
+    for bf, writes in zip(files, batches):
+        json.dump(writes, open(bf, 'w'))
+    js = 0
+    for iid in audio:
+        doc = dict((load(f'{D}/sp/deep/{iid}.json', {}) or {}), **audio[iid])
+        jp = f'{dst}/{iid}.json'
+        out = load(jp, {}) or {}
+        out = out if isinstance(out, dict) else {}
+        out.pop('err', None)
+        if doc.get('p') and doc.get('sa') and os.path.exists(f'{dst}/{iid}.mp3'):
+            out.update({'sm': doc['p'], 'sa': doc['sa'], 'ss': doc.get('ss') or []})
+            out.pop('serr', None)
+        if doc.get('fa') and os.path.exists(f'{dst}/{iid}.full.mp3'):
+            out.update({'fa': doc['fa'], 'fd': doc.get('fd') or 0})
+            out.pop('ferr', None)
+        open(jp, 'w').write(json.dumps(out, separators=(',', ':')))
+        js += 1
+    print(f'copied {n} audio files, wrote {js} player files, audio fields added to {len(audio)} database writes: {files or "none"}')
+
+
 if __name__ == '__main__':
     cmd, D = sys.argv[1], sys.argv[2].rstrip('/')
-    {'feeds': feeds, 'prep': prep, 'finalize': finalize}[cmd](D)
+    if cmd == 'publish':
+        publish(D, sys.argv[3].rstrip('/'))
+    else:
+        {'feeds': feeds, 'prep': prep, 'finalize': finalize, 'stage': stage}[cmd](D)
