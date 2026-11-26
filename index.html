@@ -579,6 +579,7 @@ async function pollSummaries(){
       const q = Q[k]; delete SR[id]; ls.set('pp-sreq', SR);
       if (j.err || !Array.isArray(j.sm) || !j.sm.length) { renderList(); $('st').textContent = 'Could not summarize “' + q.t + '”.'; continue; }
       q.sm = j.sm; q.sa = j.sa || ''; q.ss = Array.isArray(j.ss) ? j.ss : null;
+      if (isArt(q) && H.has(id)) { H.delete(id); ls.set('pp-heard', [...H].slice(-400)); }   // an article heard in full, now back as a summary: it reports as heard again
       delete sumMode[id]; ls.set('pp-sum', sumMode); delete P['S:' + id]; ls.set('pp-posmap', P);
       if (k !== i) {   // put it right after what is playing now
         const cur = Q[i] && Q[i].id; Q.splice(k, 1); const c = Math.max(0, Q.findIndex(x => x.id === cur));
