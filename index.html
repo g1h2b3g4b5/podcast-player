@@ -103,6 +103,7 @@ li .tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ac);marg
   <div class="st" id="st" aria-live="polite"></div>
   <button id="fn" class="fn">✓ Finished · next episode</button>
   <button id="sr" class="sr" hidden>📝 Summarize instead · next episode</button>
+  <button id="fr" class="sr" hidden>📖 Read in full instead · next</button>
   <div id="cp" class="hint" hidden></div>
   <div class="segl" id="segl" hidden></div>
   <div class="hint" id="hint">Scroll down for the episode list; use ↑ ↓ there to change the order. Tap ▶ Play all in your queue to load a fresh list.</div>
@@ -209,6 +210,7 @@ function mark(){
   const ob = ls.get('pp-outbox', []), cfg = loop();
   $('cp').hidden = !(cfg && ob.length); $('cp').textContent = ob.length + ' finished, waiting to sync to your queue';
   if (typeof srBtn === 'function') try { srBtn(); } catch (e) {}
+  if (typeof frBtn === 'function') try { frBtn(); } catch (e) {}
 }
 function setRate(r){ rate = r; au.playbackRate = r; ls.set('pp-rate', r); mark(); }
 // Summaries have their own reading speed (0.5x to 2x). A change picks up from the last word spoken, not the paragraph start.
@@ -512,6 +514,56 @@ function askSummary(){
   else { wantPlay = false; au.pause(); srBtn(); $('st').textContent = 'Summary requested. Nothing else left in this list.'; }
 }
 $('sr').onclick = askSummary;
+// Read in full instead (articles only, ids "b-..."): sends "f-<id>" through the drop box. The queue's article task
+// makes the full read-aloud, and once a/<id>.json lists it (fa) the article comes back here in full, next in line.
+const FR = ls.get('pp-freq', {});
+for (const k of Object.keys(FR)) if (Date.now() - FR[k] > 3 * 864e5) delete FR[k];
+ls.set('pp-freq', FR);
+const isArt = q => !!(q && q.id && String(q.id).startsWith('b-'));
+function frBtn(){
+  const q = Q[i], b = $('fr');
+  b.hidden = !(isArt(q) && !q.a && sumOf(q) && loop());
+  if (b.hidden) return;
+  b.disabled = !!FR[q.id];
+  b.textContent = FR[q.id] ? '⏳ Full read-aloud requested · it will come back here' : '📖 Read in full instead · next';
+}
+function askFull(){
+  const q = Q[i]; if (!isArt(q) || q.a || FR[q.id] || !loop()) return;
+  savePos(); FR[q.id] = Date.now(); ls.set('pp-freq', FR); outboxAdd('f-' + q.id);
+  let k = i + 1; while (k < Q.length && (H.has(Q[k].id) || SR[Q[k].id] || FR[Q[k].id])) k++;
+  renderList();
+  if (k < Q.length) { load(k, true); window.scrollTo(0, 0); }
+  else { frBtn(); $('st').textContent = 'Full read-aloud requested. Nothing else left in this list.'; }
+}
+$('fr').onclick = askFull;
+let frBusy = false;
+async function pollFull(){
+  const ids = Object.keys(FR).filter(id => Q.some(q => q.id === id && !q.a));
+  if (frBusy || !ids.length || !navigator.onLine) return;
+  frBusy = true;
+  try {
+    for (const id of ids) {
+      let j = null;
+      try { const r = await fetch('a/' + encodeURIComponent(id) + '.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch (e) {}
+      if (!j || (!j.fa && !j.ferr)) continue;
+      const k = Q.findIndex(q => q.id === id); if (k < 0) continue;
+      const q = Q[k]; delete FR[id]; ls.set('pp-freq', FR);
+      if (!j.fa) { renderList(); $('st').textContent = 'Could not make the full read-aloud of “' + q.t + '”.'; continue; }
+      q.a = j.fa; q.d = j.fd || 0; sumMode[id] = 'ep'; ls.set('pp-sum', sumMode); H.delete(id); ls.set('pp-heard', [...H].slice(-400)); delete P[id]; ls.set('pp-posmap', P);
+      if (k !== i) {   // put it right after what is playing now
+        const cur = Q[i] && Q[i].id; Q.splice(k, 1); const c = Math.max(0, Q.findIndex(x => x.id === cur));
+        Q.splice(Math.min(Q.length, c + 1), 0, q); i = Math.max(0, Q.findIndex(x => x.id === cur));
+        ls.set('pp-order', { ids: Q.map(x => x.id), at: Date.now() });
+      }
+      ls.set('pp-queue', Q); renderList();
+      $('st').textContent = 'Full read-aloud ready, up next: ' + q.t;
+      if (k === i && au.paused && !inSum) load(i, false);
+    }
+  } finally { frBusy = false; frBtn(); }
+}
+setInterval(() => { if (!document.hidden || wantPlay) pollFull(); }, 180e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pollFull(); });
+setTimeout(pollFull, 4000);
 let srBusy = false;
 async function pollSummaries(){
   const ids = Object.keys(SR).filter(id => Q.some(q => q.id === id && !sumOf(q)));
@@ -522,9 +574,10 @@ async function pollSummaries(){
       let j = null;
       try { const r = await fetch('a/' + encodeURIComponent(id) + '.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch (e) {}
       if (!j) continue;
+      if (!j.err && !j.serr && !Array.isArray(j.sm) && j.fa) continue;   // an article with only its full read-aloud so far: summary still coming
       const k = Q.findIndex(q => q.id === id); if (k < 0) continue;
       const q = Q[k]; delete SR[id]; ls.set('pp-sreq', SR);
-      if (j.err || !Array.isArray(j.sm) || !j.sm.length) { renderList(); $('st').textContent = 'Could not summarize “' + q.t + '”.'; continue; }
+      if (j.err || j.serr || !Array.isArray(j.sm) || !j.sm.length) { renderList(); $('st').textContent = 'Could not summarize “' + q.t + '”.'; continue; }
       q.sm = j.sm; q.sa = j.sa || ''; q.ss = Array.isArray(j.ss) ? j.ss : null;
       delete sumMode[id]; ls.set('pp-sum', sumMode); delete P['S:' + id]; ls.set('pp-posmap', P);
       if (k !== i) {   // put it right after what is playing now
@@ -537,7 +590,7 @@ async function pollSummaries(){
       $('st').textContent = 'Summary ready, up next: ' + q.t;
       if (k === i && au.paused && !inSum) load(i, false);
     }
-  } finally { srBusy = false; srBtn(); }
+  } finally { srBusy = false; srBtn(); frBtn(); }
 }
 setInterval(() => { if (!document.hidden || wantPlay) pollSummaries(); }, 180e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) pollSummaries(); });

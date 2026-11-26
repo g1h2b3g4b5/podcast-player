@@ -578,13 +578,29 @@ def speak(D):
         doc = raw.get('data', raw) if isinstance(raw, dict) else {}
         ver = (raw.get('version') if isinstance(raw, dict) else None) or 1   # deep docs are written once, so version 1 unless audio was added
         iid = os.path.basename(path)[:-5]
-        if not doc.get('p') or doc.get('sa'):
+        data = {}
+        if doc.get('p') and not doc.get('sa'):
+            voice = voice or ensure_voice()
+            ss, sd, h = say_one(voice, iid, [x for _, x in doc['p']], out)
+            data.update({'sa': f'a/{iid}.mp3?v={h}', 'ss': ss, 'sd': sd})
+            done += 1
+        # Articles (lqart.py): the post's full text is in DIR/atext/<id>.json = {t: [paragraphs]}; it is read aloud
+        # into a/<id>.full.mp3 and the doc gets fa (the file) and fd (its length in seconds).
+        if doc.get('ft') and not doc.get('fa'):
+            traw = json.load(open(f'{D}/atext/{iid}.json')) if os.path.exists(f'{D}/atext/{iid}.json') else {}
+            tdoc = traw.get('data', traw) if isinstance(traw, dict) else {}
+            paras = [str(x) for x in (tdoc.get('t') or []) if str(x).strip()]
+            if paras:
+                try:
+                    voice = voice or ensure_voice()
+                    _, fd, h = say_one(voice, iid + '.full', paras, out)
+                    data.update({'fa': f'a/{iid}.full.mp3?v={h}', 'fd': fd})
+                    done += 1
+                except Exception as e:
+                    print(f'full read-aloud failed for {iid}: {str(e)[:120]}')
+        if not data:
             continue
-        voice = voice or ensure_voice()
-        ss, sd, h = say_one(voice, iid, [x for _, x in doc['p']], out)
-        ups.append({'op': 'update', 'collection': 'deep', 'doc_id': iid, 'if_version': ver,
-                    'data': {'sa': f'a/{iid}.mp3?v={h}', 'ss': ss, 'sd': sd}})
-        done += 1
+        ups.append({'op': 'update', 'collection': 'deep', 'doc_id': iid, 'if_version': ver, 'data': data})
     files = []
     for b in range(0, len(ups), 40):
         f = f'{D}/abatch_{b // 40}.json'
@@ -606,7 +622,8 @@ def publish(D, repo):
         shutil.copy(p, dst); n += 1
     gone = 0
     for p in glob.glob(f'{dst}/*.mp3'):
-        if os.path.basename(p)[:-4] not in keep:
+        base = os.path.basename(p)[:-4]
+        if (base[:-5] if base.endswith('.full') else base) not in keep:
             os.remove(p); gone += 1
     # Next to each audio file, a small a/<id>.json {sm, sa, ss} lets the player turn an episode it asked to have
     # summarized ("Summarize instead") into its summary without a new Play all. Recent failures get {err}.
@@ -624,8 +641,16 @@ def publish(D, repo):
             out = {'sm': doc['p'], 'sa': doc['sa'], 'ss': doc.get('ss') or []}
             if doc.get('sg'):
                 out['sg'] = doc['sg']
-        elif doc.get('err') and not doc.get('p') and at and (NOW - at).days < 3:
+        elif doc.get('err') and not doc.get('p') and not doc.get('fa') and at and (NOW - at).days < 3:
             out = {'err': str(doc['err'])[:200]}
+        # Articles: the full read-aloud (fa, fd), and why a version could not be made (serr, ferr).
+        if doc.get('fa') and os.path.exists(f'{dst}/{iid}.full.mp3'):
+            out = dict(out or {}, fa=doc['fa'], fd=doc.get('fd') or 0)
+        if iid.startswith('b-') and at and (NOW - at).days < 3:
+            if (doc.get('ferr') or doc.get('err')) and not doc.get('fa'):
+                out = dict(out or {}, ferr=str(doc.get('ferr') or doc.get('err'))[:200])
+            if doc.get('serr') and not doc.get('p'):
+                out = dict(out or {}, serr=str(doc['serr'])[:200])
         if out is not None:
             new = json.dumps(out, separators=(',', ':'))
             jp = f'{dst}/{iid}.json'
