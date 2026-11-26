@@ -150,7 +150,7 @@ class Paras(HTMLParser):
 
 BOILER = re.compile(r'^(share( this)?|subscribe|sign up|read more|continue reading|leave a (comment|reply)|related( posts)?|'
                     r'tags?:|posted (in|on)|filed under|click here|photo( credit)?:|image:|advertisement|loading|'
-                    r'thanks for reading|this post is for paid subscribers|listen to this (article|post)).{0,80}$', re.I)
+                    r'thanks for reading|this post is for paid subscribers|listen to this (article|post)).{0,80}$|^the post .{1,200} appeared first on .{1,80}$', re.I)
 
 
 def clean(t):
