@@ -615,6 +615,10 @@ def finalize(D):
                 doc = {'err': 'could not be transcribed: ' + reason, 'at': now}
             errs.append(f'{iid}: {reason}')
         if doc is not None:
+            if doc.get('p') and not doc.get('full'):   # spoken first by speak(), here and in the audio publisher
+                intro = intro_for(D, iid)
+                if intro:
+                    doc['in'] = intro
             w = {'op': 'set', 'collection': 'deep', 'doc_id': iid, 'data': doc}
             if n.get('retry'):
                 w['if_version'] = n['retry']
@@ -692,10 +696,12 @@ def intro_for(D, iid, cache={}):
     return f'{t}.' if t else (f'From {ch}.' if ch else '')
 
 
-def with_intro(D, iid, paras):
+def with_intro(D, iid, paras, doc=None):
     """The first paragraph read with the title and source before it. The paragraph count and start
-    times stay the same, so segment 1's summary (and Play from here) still begins at 0 with the intro."""
-    i = intro_for(D, iid)
+    times stay the same, so segment 1's summary (and Play from here) still begins at 0 with the intro.
+    The intro kept in the summary document ('in', written by finalize) comes first: the audio publisher
+    downloads only the summaries, not the feeds, so it cannot look titles up itself."""
+    i = (doc or {}).get('in') or intro_for(D, iid)
     return [f'{i} {paras[0]}'] + paras[1:] if i and paras else paras
 
 
@@ -715,7 +721,7 @@ def speak(D):
             voice = voice or ensure_voice()
             paras = [x for _, x in p]
             if not w['data'].get('full'):   # full read-alouds of blog posts get no intro
-                paras = with_intro(D, w['doc_id'], paras)
+                paras = with_intro(D, w['doc_id'], paras, w['data'])
             ss, sd, h = say_one(voice, w['doc_id'], paras, out)
             w['data'].update({'sa': f"a/{w['doc_id']}.mp3?v={h}", 'ss': ss, 'sd': sd})
             done += 1
@@ -731,7 +737,7 @@ def speak(D):
         voice = voice or ensure_voice()
         paras = [x for _, x in doc['p']]
         if not doc.get('full'):
-            paras = with_intro(D, iid, paras)
+            paras = with_intro(D, iid, paras, doc)
         ss, sd, h = say_one(voice, iid, paras, out)
         ups.append({'op': 'update', 'collection': 'deep', 'doc_id': iid, 'if_version': ver,
                     'data': {'sa': f'a/{iid}.mp3?v={h}', 'ss': ss, 'sd': sd}})
