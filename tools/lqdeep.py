@@ -637,6 +637,25 @@ VOICE_URL = 'https://github.com/rhasspy/piper/releases/download/v0.0.2/voice-en-
 GAP = 0.7           # seconds of silence between paragraphs
 
 
+def chime(path, rate):
+    """A two-note rising chime written to path; returns its length in seconds. It opens every summary
+    recording, before the spoken title, so it is plain where one summary ends and the next begins
+    (Ryan, Nov 27 2026). Quiet lead-in, two bell-like notes (E5 then A5), then a short pause."""
+    import wave, math, struct
+    out = [0.0] * int(rate * 0.45)
+    for hz, dur in ((659.26, 0.20), (880.0, 0.55)):
+        n = int(rate * dur)
+        for k in range(n):
+            t = k / rate
+            env = min(1.0, t / 0.008) * math.exp(-t * 5.0) * min(1.0, (n - k) / (rate * 0.02))
+            out.append(0.38 * env * (math.sin(2 * math.pi * hz * t) + 0.25 * math.sin(4 * math.pi * hz * t)))
+    out += [0.0] * int(rate * 0.55)
+    with wave.open(path, 'wb') as f:
+        f.setnchannels(1); f.setsampwidth(2); f.setframerate(rate)
+        f.writeframes(b''.join(struct.pack('<h', int(max(-1.0, min(1.0, x)) * 32767)) for x in out))
+    return len(out) / rate
+
+
 def ensure_voice():
     vd = os.path.expanduser('~/.cache/lqvoice')
     onnx = f'{vd}/en-us-lessac-medium.onnx'
@@ -662,18 +681,29 @@ def say_one(voice, iid, paras, outdir):
             voice.synthesize_wav(x, f)
         with wave.open(w) as f:
             rate = f.getframerate(); d = f.getnframes() / rate
-        starts.append(round(t, 2)); wavs.append(w); t += d + GAP
+        if j == 0:
+            # The chime belongs to the first paragraph, which still starts at 0; later starts move by its length.
+            lead = f'{tmp}/chime.wav'
+            with wave.open(w) as f:
+                ch1 = f.getnchannels() == 1 and f.getsampwidth() == 2
+            if ch1:
+                starts.append(0.0); wavs.append(lead); t += chime(lead, rate)
+            else:
+                starts.append(0.0)
+        else:
+            starts.append(round(t, 2))
+        wavs.append(w); t += d + GAP
     lst = f'{tmp}/list.txt'
     gap = f'{tmp}/gap.wav'
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', f'anullsrc=r={rate}:cl=mono', '-t', str(GAP), gap], check=True)
     with open(lst, 'w') as f:
         for j, w in enumerate(wavs):
             f.write(f"file '{w}'\n")
-            if j < len(wavs) - 1:
+            if j < len(wavs) - 1 and not w.endswith('/chime.wav'):
                 f.write(f"file '{gap}'\n")
     os.makedirs(outdir, exist_ok=True)
     subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', lst, '-ac', '1', '-c:a', 'libmp3lame', '-b:a', '48k', f'{outdir}/{iid}.mp3'], check=True)
-    h = hashlib.sha1(' '.join(paras).encode()).hexdigest()[:8]
+    h = hashlib.sha1(('chime1 ' + ' '.join(paras)).encode()).hexdigest()[:8]
     return starts, round(t - GAP, 1), h
 
 
