@@ -122,8 +122,8 @@ const toItems = arr => arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x
   // Segmented episode: sg = [[startSecs, endSecs, firstSummaryParagraph, title], ...], gd = what each segment starts as
   // ('o' original, 's' summary), gf = 1 when the first segment always starts as the original.
   sg: Array.isArray(x[9]) && Array.isArray(x[9][0]) && x[9][0].length ? x[9][0] : null, gd: Array.isArray(x[9]) && x[9][1] === 's' ? 's' : 'o', gf: Array.isArray(x[9]) && x[9][2] ? 1 : 0,
-  // wl = 1: a Watch later video summary; its button adds the full video to the queue's "Watch later · full videos" section.
-  wl: x[10] === 'wl' ? 1 : 0 })).filter(x => x.a || x.sm);
+  // wl = 1: a Watch later video summary ('wl'), 0: Daily news ('dn'), 2: not marked (a list from an older queue page); its button adds the full video to the queue's "Watch later · full videos" section.
+  wl: x[10] === 'wl' ? 1 : x[10] === 'dn' ? 0 : 2 })).filter(x => x.a || x.sm);
 // Lists with read-aloud summaries arrive deflated (#z=); unpack them into the plain form before the page starts.
 const zm = location.hash.match(/[#&]z=([A-Za-z0-9_-]+)/);
 let zItems = null;
@@ -416,7 +416,7 @@ function showPara(){
   $('sumhd').textContent = sumOpen ? '▾ Hide summary text' : '▸ Show summary text';
   $('sumhd').setAttribute('aria-expanded', String(sumOpen)); $('sumtx').hidden = !sumOpen;
   if (!inSA) { $('seek').max = sumTotal(sm); $('seek').value = sumBefore(sm, sumK) + sumChar; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length; }
-  $('wo').hidden = !!q.a || !q.v; $('wo').disabled = WO.has(q.id); $('wo').textContent = q.wl ? (WO.has(q.id) ? '✓ Added to Watch later · full videos' : '＋ Add to Watch later · full videos') : (WO.has(q.id) ? '✓ Original added to Daily news' : '＋ Add original to Daily news'); $('full').hidden = true; $('here').hidden = !q.a;
+  $('wo').hidden = !!q.a || !q.v; $('wo').disabled = WO.has(q.id); { const on = WO.has(q.id); $('wo').textContent = q.wl === 1 ? (on ? '✓ Added to Watch later · full videos' : '＋ Add to Watch later · full videos') : q.wl === 0 ? (on ? '✓ Original added to Daily news' : '＋ Add original to Daily news') : (on ? '✓ Full video added to your Playlist' : '＋ Add full video to my Playlist'); } $('full').hidden = true; $('here').hidden = !q.a;
   $('here').textContent = '▶ Play the episode from ' + f(sm[sumK][0]);
 }
 function enterSum(go){
