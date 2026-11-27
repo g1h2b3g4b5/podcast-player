@@ -121,7 +121,9 @@ const unb64 = t => Uint8Array.from(atob(t.replace(/-/g, '+').replace(/_/g, '/'))
 const toItems = arr => arr.map(x => ({ id: x[0], t: x[1], s: x[2], a: x[3], d: x[4] || 0, p: x[5] || '', v: x[6] || '', sm: Array.isArray(x[7]) && x[7].length ? x[7] : null, sa: Array.isArray(x[8]) ? x[8][0] || '' : '', ss: Array.isArray(x[8]) && Array.isArray(x[8][1]) ? x[8][1] : null,
   // Segmented episode: sg = [[startSecs, endSecs, firstSummaryParagraph, title], ...], gd = what each segment starts as
   // ('o' original, 's' summary), gf = 1 when the first segment always starts as the original.
-  sg: Array.isArray(x[9]) && Array.isArray(x[9][0]) && x[9][0].length ? x[9][0] : null, gd: Array.isArray(x[9]) && x[9][1] === 's' ? 's' : 'o', gf: Array.isArray(x[9]) && x[9][2] ? 1 : 0 })).filter(x => x.a || x.sm);
+  sg: Array.isArray(x[9]) && Array.isArray(x[9][0]) && x[9][0].length ? x[9][0] : null, gd: Array.isArray(x[9]) && x[9][1] === 's' ? 's' : 'o', gf: Array.isArray(x[9]) && x[9][2] ? 1 : 0,
+  // wl = 1: a Watch later video summary; its button adds the full video to the queue's "Watch later · full videos" section.
+  wl: x[10] === 'wl' ? 1 : 0 })).filter(x => x.a || x.sm);
 // Lists with read-aloud summaries arrive deflated (#z=); unpack them into the plain form before the page starts.
 const zm = location.hash.match(/[#&]z=([A-Za-z0-9_-]+)/);
 let zItems = null;
@@ -414,7 +416,7 @@ function showPara(){
   $('sumhd').textContent = sumOpen ? '▾ Hide summary text' : '▸ Show summary text';
   $('sumhd').setAttribute('aria-expanded', String(sumOpen)); $('sumtx').hidden = !sumOpen;
   if (!inSA) { $('seek').max = sumTotal(sm); $('seek').value = sumBefore(sm, sumK) + sumChar; $('pos').textContent = '¶ ' + (sumK + 1); $('len').textContent = 'of ' + sm.length; }
-  $('wo').hidden = !!q.a || !q.v; $('wo').disabled = WO.has(q.id); $('wo').textContent = WO.has(q.id) ? '✓ Original added to Daily news' : '＋ Add original to Daily news'; $('full').hidden = true; $('here').hidden = !q.a;
+  $('wo').hidden = !!q.a || !q.v; $('wo').disabled = WO.has(q.id); $('wo').textContent = q.wl ? (WO.has(q.id) ? '✓ Added to Watch later · full videos' : '＋ Add to Watch later · full videos') : (WO.has(q.id) ? '✓ Original added to Daily news' : '＋ Add original to Daily news'); $('full').hidden = true; $('here').hidden = !q.a;
   $('here').textContent = '▶ Play the episode from ' + f(sm[sumK][0]);
 }
 function enterSum(go){
@@ -493,7 +495,8 @@ function toEpisode(at){
   P[q.id] = t; ls.set('pp-posmap', P);
   load(i, true, t); renderList();
 }
-// Add original: flags this video so the queue puts it back in Daily news (Playlist tab). The summary keeps playing.
+// Add original: flags this video so the queue puts it back in Daily news, or, for a Watch later summary, in the
+// "Watch later · full videos" section at the bottom of Playlist. The summary keeps playing.
 function watchOrig(){
   const q = Q[i]; if (!q || q.a || !q.v || WO.has(q.id)) return;
   WO.add(q.id); ls.set('pp-wo', [...WO].slice(-300)); outboxAdd('w-' + q.id); showPara();
